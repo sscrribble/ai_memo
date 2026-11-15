@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4f46e5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="AI 메모">
+  <title>AI 메모</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-box">
+      <img src="/icon.svg" alt="" width="56" height="56">
+      <h1>AI 메모</h1>
+      <input id="login-pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
+      <button type="submit" class="btn primary">로그인</button>
+      <p id="login-err" class="err"></p>
+    </form>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header class="top">
+      <div class="brand"><img src="/icon.svg" alt="" width="26" height="26"> AI 메모
+        <span id="sync" class="sync" title="동기화 상태"></span></div>
+      <input id="search" type="search" placeholder="검색">
+    </header>
+
+    <nav class="tabs" id="tabs">
+      <button data-view="all" class="active"><span class="ic">🗒️</span>전체</button>
+      <button data-view="todo"><span class="ic">✅</span>할 일</button>
+      <button data-view="calendar"><span class="ic">📅</span>캘린더</button>
+      <button data-view="shopping"><span class="ic">🛒</span>장보기</button>
+    </nav>
+
+    <main>
+      <form id="compose" class="compose">
+        <textarea id="compose-text" rows="2" placeholder="무엇이든 적으세요. AI가 알아서 분류합니다.&#10;예) 내일 3시 치과 / 우유, 계란 사기"></textarea>
+        <div class="compose-bar">
+          <span id="ai-hint" class="hint"></span>
+          <button type="submit" class="btn primary">저장</button>
+        </div>
+      </form>
+
+      <section id="view"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
