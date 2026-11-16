@@ -32,6 +32,15 @@
     </form>
   </div>
 
+  <div id="fatal" class="login" hidden>
+    <div class="login-box">
+      <img src="/icon.svg" alt="" width="52" height="52">
+      <h1>서버에 연결할 수 없습니다</h1>
+      <p class="login-sub">서버가 켜져 있는지, 주소가 맞는지 확인해 주세요.</p>
+      <button id="fatal-retry" type="button" class="btn primary">다시 시도</button>
+    </div>
+  </div>
+
   <div id="app" class="app" hidden>
     <aside class="side">
       <div class="brand"><img src="/icon.svg" alt="" width="28" height="28"><span>AI 메모</span></div>
@@ -58,9 +67,12 @@
             <i data-icon="search"></i>
             <input id="search" type="search" placeholder="검색" aria-label="검색">
           </label>
-          <button class="icon-btn" id="bell" type="button" aria-label="알림 설정"><i data-icon="bell"></i></button>
+          <button class="icon-btn" id="open-settings" type="button" aria-label="설정 (알림·백업·휴지통)"><i data-icon="settings"></i></button>
           <button class="icon-btn theme-toggle only-mobile" type="button" aria-label="밝은/어두운 화면 전환"></button>
         </header>
+
+        <div id="offline" class="offline" role="status" hidden></div>
+        <div id="banners" class="banners" aria-live="polite"></div>
 
         <form id="compose" class="compose">
           <textarea id="compose-text" rows="2" aria-label="새 메모"
@@ -77,25 +89,48 @@
     </div>
   </div>
 
-  <dialog id="notify" class="sheet" aria-labelledby="notify-title">
+  <dialog id="settings" class="sheet" aria-labelledby="settings-title">
     <div class="sheet-head">
-      <h2 id="notify-title">알림</h2>
-      <button class="icon-btn" id="notify-close" type="button" aria-label="닫기"><i data-icon="close"></i></button>
+      <h2 id="settings-title">설정</h2>
+      <button class="icon-btn" id="settings-close" type="button" aria-label="닫기"><i data-icon="close"></i></button>
     </div>
-    <div class="set-row">
-      <div><strong>이 기기에서 알림 받기</strong><p id="push-status"></p></div>
-      <button class="btn" id="push-toggle" type="button"></button>
-    </div>
-    <div class="set-group">
+
+    <section class="set-sec" aria-labelledby="sec-notify">
+      <h3 id="sec-notify">알림</h3>
+      <div class="set-row">
+        <div><strong>이 기기에서 알림 받기</strong><p id="push-status"></p></div>
+        <button class="btn" id="push-toggle" type="button"></button>
+      </div>
       <label class="set-row"><div><strong>아침 요약</strong><p>오늘 할 일과 지난 일을 한 번에</p></div><select id="set-morning"></select></label>
       <label class="set-row"><div><strong>전날 알림</strong><p>내일 일정과 마감</p></div><select id="set-evening"></select></label>
       <label class="set-row"><div><strong>일정 직전 알림</strong><p>시간이 정해진 일정</p></div><select id="set-lead"></select></label>
-    </div>
-    <button class="btn ghost" id="push-test" type="button">테스트 알림 보내기</button>
+      <button class="btn ghost flush" id="push-test" type="button">테스트 알림 보내기</button>
+    </section>
+
+    <section class="set-sec" aria-labelledby="sec-backup">
+      <h3 id="sec-backup">백업</h3>
+      <div class="set-row">
+        <div><strong>자동 백업</strong><p id="backup-status"></p><p class="path" id="backup-dir"></p></div>
+        <button class="btn" id="backup-now" type="button">지금 백업</button>
+      </div>
+      <div class="set-row wrap">
+        <div><strong>파일로 보관·옮기기</strong><p>내보낸 파일은 다른 서버에서 가져올 수 있습니다</p></div>
+        <div class="btns">
+          <button class="btn" id="export" type="button">내보내기</button>
+          <button class="btn" id="import" type="button">가져오기</button>
+        </div>
+      </div>
+      <input type="file" id="import-file" accept=".json,application/json" hidden>
+    </section>
+
+    <section class="set-sec" aria-labelledby="sec-trash">
+      <h3 id="sec-trash">휴지통</h3>
+      <div id="trash"></div>
+    </section>
   </dialog>
 
-  <div id="banners" class="banners" aria-live="polite"></div>
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/recur.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

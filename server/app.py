@@ -1,4 +1,4 @@
-"""AI 메모 서버: 메모 저장·동기화 API + 웹앱 제공."""
+"""AI 메모 서버: 메모 저장·동기화 API, 알림, 백업 + 웹앱 제공."""
 from __future__ import annotations
 
 import asyncio
@@ -6,35 +6,50 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
 import threading
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import classifier
+import recurrence
 import reminders
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("memo")
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, "") or default))
+    except ValueError:
+        return default
+
+
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
-DB_PATH = Path(os.getenv("MEMO_DB", ROOT / "data" / "memo.db"))
+DB_PATH = Path(os.getenv("MEMO_DB", ROOT / "data" / "memo.db")).expanduser()
+BACKUP_DIR = Path(os.getenv("MEMO_BACKUP_DIR", "") or DB_PATH.parent / "backups").expanduser()
+BACKUP_KEEP = _env_int("MEMO_BACKUP_KEEP", 14)
+TRASH_DAYS = 30
 TZ = ZoneInfo(os.getenv("MEMO_TZ", "Asia/Seoul"))
 PASSWORD = os.getenv("MEMO_PASSWORD", "")
 SECRET = os.getenv("MEMO_SECRET", PASSWORD or "dev")
 # 웹 푸시 서비스에 알리는 서버 운영자 연락처 (mailto: 또는 https: 주소)
 CONTACT = os.getenv("MEMO_CONTACT", "mailto:admin@example.com")
+TIME_RE = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 
 
 # ---------------------------------------------------------------- DB
@@ -56,22 +71,24 @@ CREATE TABLE IF NOT EXISTS notes (
     tags TEXT NOT NULL DEFAULT '[]',
     due_date TEXT,
     due_time TEXT,
+    repeat TEXT,
     done INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
     classified_by TEXT,
     rev INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
 );
 CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     quantity TEXT,
+    section TEXT,
     checked INTEGER NOT NULL DEFAULT 0,
     position INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_notes_due ON notes(due_date);
-CREATE INDEX IF NOT EXISTS idx_items_note ON items(note_id);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS push_subs (
     endpoint TEXT PRIMARY KEY,
@@ -80,19 +97,34 @@ CREATE TABLE IF NOT EXISTS push_subs (
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS reminders_sent (key TEXT PRIMARY KEY, sent_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_notes_due ON notes(due_date);
+CREATE INDEX IF NOT EXISTS idx_items_note ON items(note_id);
 -- 수정될 때마다 rev 증가: 기기들이 오래된 응답으로 최신 상태를 덮어쓰지 않게 함
 CREATE TRIGGER IF NOT EXISTS notes_rev AFTER UPDATE ON notes BEGIN
     UPDATE notes SET rev = OLD.rev + 1 WHERE id = NEW.id;
 END;
 """)
-# 이전 버전에서 만든 DB에 새 컬럼 추가
-if "due_locked" not in {r["name"] for r in _db.execute("PRAGMA table_info(notes)")}:
-    _db.execute("ALTER TABLE notes ADD COLUMN due_locked INTEGER NOT NULL DEFAULT 0")
-    _db.commit()
+# 이전 버전에서 만든 DB 에 새 컬럼 추가
+for _table, _column, _ddl in (
+    ("notes", "due_locked", "INTEGER NOT NULL DEFAULT 0"),
+    ("notes", "repeat", "TEXT"),
+    ("notes", "pinned", "INTEGER NOT NULL DEFAULT 0"),
+    ("notes", "deleted_at", "TEXT"),
+    ("items", "section", "TEXT"),
+):
+    if _column not in {r["name"] for r in _db.execute(f"PRAGMA table_info({_table})")}:
+        _db.execute(f"ALTER TABLE {_table} ADD COLUMN {_column} {_ddl}")
+for _r in _db.execute("SELECT id, name FROM items WHERE section IS NULL").fetchall():
+    _db.execute("UPDATE items SET section=? WHERE id=?", (classifier.guess_section(_r["name"]), _r["id"]))
+_db.commit()
 
 
 def now() -> str:
     return datetime.now(TZ).isoformat(timespec="seconds")
+
+
+def today() -> date:
+    return datetime.now(TZ).date()
 
 
 def query(sql: str, args: tuple = ()) -> list[sqlite3.Row]:
@@ -107,23 +139,55 @@ def execute(sql: str, args: tuple = ()) -> int:
         return cur.lastrowid
 
 
-def note_dict(row: sqlite3.Row) -> dict:
+def parse_date(value) -> Optional[date]:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def load_rule(text) -> Optional[dict]:
+    try:
+        return recurrence.clean(json.loads(text)) if text else None
+    except (ValueError, TypeError):
+        return None
+
+
+def items_by_note(note_id: Optional[int] = None) -> dict[int, list[dict]]:
+    sql, args = "SELECT * FROM items", ()
+    if note_id is not None:
+        sql, args = sql + " WHERE note_id=?", (note_id,)
+    out: dict[int, list[dict]] = {}
+    for r in query(sql + " ORDER BY position, id", args):
+        out.setdefault(r["note_id"], []).append({
+            "id": r["id"], "name": r["name"], "quantity": r["quantity"],
+            "section": r["section"] or "기타", "checked": bool(r["checked"]),
+        })
+    return out
+
+
+def note_dict(row: sqlite3.Row, items: Optional[list] = None) -> dict:
     d = dict(row)
-    d["tags"] = json.loads(d["tags"])
-    d["done"] = bool(d["done"])
-    d["category_locked"] = bool(d["category_locked"])
-    d["items"] = [
-        {"id": r["id"], "name": r["name"], "quantity": r["quantity"], "checked": bool(r["checked"])}
-        for r in query("SELECT * FROM items WHERE note_id=? ORDER BY position, id", (d["id"],))
-    ]
+    d["tags"] = json.loads(d["tags"] or "[]")
+    d["repeat"] = load_rule(d["repeat"])
+    for key in ("done", "category_locked", "due_locked", "pinned"):
+        d[key] = bool(d[key])
+    d["items"] = items if items is not None else items_by_note(d["id"]).get(d["id"], [])
     return d
 
 
-def get_note(note_id: int) -> dict:
-    rows = query("SELECT * FROM notes WHERE id=?", (note_id,))
+def get_note(note_id: int, deleted: bool = False) -> dict:
+    rows = query(f"SELECT * FROM notes WHERE id=? AND deleted_at IS {'NOT ' if deleted else ''}NULL", (note_id,))
     if not rows:
         raise HTTPException(404, "메모가 없습니다")
     return note_dict(rows[0])
+
+
+def touch(note_id: int) -> None:
+    """메모의 수정 시각(과 rev)을 올린다. 항목만 바뀌었을 때 쓴다."""
+    execute("UPDATE notes SET updated_at=? WHERE id=?", (now(), note_id))
 
 
 # ---------------------------------------------------------------- 실시간 동기화 (SSE)
@@ -148,31 +212,43 @@ def require_auth(request: Request) -> None:
         return
     header = request.headers.get("authorization", "")
     token = header.removeprefix("Bearer ").strip() or request.query_params.get("token", "")
-    if not hmac.compare_digest(token, make_token()):
+    if not hmac.compare_digest(token.encode(), make_token().encode()):
         raise HTTPException(401, "로그인이 필요합니다")
+
+
+# 비밀번호 무차별 대입 막기: 10분 안에 5번 틀리면 5분 동안 잠금
+LOGIN_MAX_FAILS, LOGIN_WINDOW, LOGIN_LOCK = 5, 600, 300
+_login_fails: dict[str, list[float]] = {}
 
 
 # ---------------------------------------------------------------- AI 분류 (백그라운드)
 
 async def classify_note(note_id: int) -> None:
-    rows = query("SELECT content FROM notes WHERE id=?", (note_id,))
+    rows = query("SELECT content FROM notes WHERE id=? AND deleted_at IS NULL", (note_id,))
     if not rows:
         return
-    result, method = await classifier.classify(rows[0]["content"], datetime.now(TZ).date())
+    day = today()
+    result, method = await classifier.classify(rows[0]["content"], day)
+    rule, due = recurrence.normalize(result.repeat.model_dump() if result.repeat else None,
+                                     parse_date(result.due_date), day)
     with _lock:
         # AI 응답을 기다리는 동안 사용자가 직접 고친 분류·날짜는 그대로 둔다
         cur = _db.execute(
-            "SELECT category, category_locked, due_date, due_time, due_locked FROM notes WHERE id=?",
+            "SELECT category, category_locked, due_date, due_time, repeat, due_locked FROM notes WHERE id=?",
             (note_id,)).fetchone()
         if cur is None:
             return
         category = cur["category"] if cur["category_locked"] else result.category
-        due_date, due_time = ((cur["due_date"], cur["due_time"]) if cur["due_locked"]
-                              else (result.due_date, result.due_time))
+        if cur["due_locked"]:
+            due_date, due_time, repeat = cur["due_date"], cur["due_time"], cur["repeat"]
+        else:
+            due_date, due_time = (due.isoformat() if due else None), result.due_time
+            repeat = json.dumps(rule) if rule else None
         _db.execute(
-            "UPDATE notes SET title=?, category=?, tags=?, due_date=?, due_time=?, classified_by=?, updated_at=? WHERE id=?",
-            (result.title, category, json.dumps(result.tags, ensure_ascii=False),
-             due_date, due_time, method, now(), note_id),
+            "UPDATE notes SET title=?, category=?, tags=?, due_date=?, due_time=?, repeat=?, classified_by=?, "
+            "updated_at=? WHERE id=?",
+            (result.title, category, json.dumps(result.tags, ensure_ascii=False), due_date, due_time, repeat,
+             method, now(), note_id),
         )
         # 체크 상태는 이름이 같은 항목끼리 유지
         checked = {r["name"] for r in _db.execute(
@@ -180,11 +256,14 @@ async def classify_note(note_id: int) -> None:
         _db.execute("DELETE FROM items WHERE note_id=?", (note_id,))
         for i, it in enumerate(result.items):
             _db.execute(
-                "INSERT INTO items (note_id, name, quantity, checked, position) VALUES (?,?,?,?,?)",
-                (note_id, it.name, it.quantity, int(it.name in checked), i),
+                "INSERT INTO items (note_id, name, quantity, section, checked, position) VALUES (?,?,?,?,?,?)",
+                (note_id, it.name.strip(), it.quantity, it.section, int(it.name in checked), i),
             )
         _db.commit()
-    broadcast("note", get_note(note_id))
+    try:
+        broadcast("note", get_note(note_id))
+    except HTTPException:  # 그 사이 삭제됨
+        pass
 
 
 _tasks: set[asyncio.Task] = set()
@@ -202,6 +281,19 @@ def get_settings() -> dict:
     s = dict(reminders.DEFAULTS)
     s.update({r["key"]: r["value"] for r in query("SELECT key, value FROM settings") if r["key"] in s})
     return s
+
+
+def save_settings(values: dict) -> None:
+    for key, value in values.items():
+        if key not in reminders.DEFAULTS or value is None:
+            continue
+        value = str(value).strip()
+        ok = (value == "" or (value.isdigit() and int(value) <= 1440) if key == "lead"
+              else value == "" or TIME_RE.fullmatch(value))
+        if not ok:
+            raise HTTPException(400, "잘못된 설정값")
+        execute("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value))
 
 
 _vapid: Optional["reminders.Vapid"] = None
@@ -243,24 +335,69 @@ async def deliver(rem: reminders.Reminder) -> int:
 
 
 async def check_reminders() -> None:
-    current = datetime.now(TZ)
     notes = [dict(r) for r in query(
-        "SELECT id, title, due_date, due_time FROM notes WHERE done=0 AND due_date IS NOT NULL")]
-    for rem in reminders.due_reminders(notes, current, get_settings()):
+        "SELECT id, title, due_date, due_time FROM notes "
+        "WHERE done=0 AND due_date IS NOT NULL AND deleted_at IS NULL")]
+    for rem in reminders.due_reminders(notes, datetime.now(TZ), get_settings()):
         if query("SELECT 1 FROM reminders_sent WHERE key=?", (rem.key,)):
             continue
         execute("INSERT INTO reminders_sent (key, sent_at) VALUES (?,?)", (rem.key, now()))
         await deliver(rem)
 
 
-async def reminder_loop() -> None:
+# ---------------------------------------------------------------- 백업·정리
+
+def backup_files() -> list[Path]:
+    return sorted(BACKUP_DIR.glob("memo-*.db")) if BACKUP_DIR.is_dir() else []
+
+
+def make_backup(force: bool = False) -> Optional[Path]:
+    """오늘 날짜 백업 파일을 만든다 (하루 한 번). 오래된 백업은 BACKUP_KEEP 개만 남긴다."""
+    target = BACKUP_DIR / f"memo-{today().isoformat()}.db"
+    if target.exists() and not force:
+        return None
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    dst = sqlite3.connect(tmp)
+    try:
+        with _lock:
+            _db.backup(dst)  # 서버가 도는 중에도 안전하게 복사
+    finally:
+        dst.close()
+    os.replace(tmp, target)
+    for old in backup_files()[:-BACKUP_KEEP]:
+        old.unlink(missing_ok=True)
+    return target
+
+
+_maintained: Optional[date] = None
+
+
+async def daily_maintenance() -> None:
+    """하루 한 번: 자동 백업, 30일 지난 휴지통·알림 기록 비우기."""
+    global _maintained
+    if _maintained == today():
+        return
+    _maintained = today()
+    cutoff = (datetime.now(TZ) - timedelta(days=TRASH_DAYS)).isoformat(timespec="seconds")
+    execute("DELETE FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,))
     execute("DELETE FROM reminders_sent WHERE sent_at < ?",
             ((datetime.now(TZ) - timedelta(days=60)).isoformat(timespec="seconds"),))
+    try:
+        path = await asyncio.to_thread(make_backup)
+        if path:
+            log.info("자동 백업: %s", path)
+    except Exception as e:
+        log.warning("자동 백업 실패 (%s): %s", BACKUP_DIR, e)
+
+
+async def background_loop() -> None:
     while True:
         try:
+            await daily_maintenance()
             await check_reminders()
         except Exception:
-            log.exception("알림 확인 중 오류")
+            log.exception("백그라운드 작업 중 오류")
         await asyncio.sleep(30)
 
 
@@ -271,13 +408,18 @@ async def lifespan(_: FastAPI):
     if not PASSWORD:
         log.warning("MEMO_PASSWORD 가 설정되지 않아 누구나 접속할 수 있습니다. 외부 공개 시 반드시 설정하세요.")
     log.info("AI 분류: %s", f"사용 ({classifier.MODEL})" if classifier.ai_enabled() else "꺼짐 (ANTHROPIC_API_KEY 없음 → 규칙 기반)")
-    # 분류가 끝나지 않은 메모(서버 재시작 등) 다시 처리
-    for r in query("SELECT id FROM notes WHERE category='pending'"):
-        schedule_classification(r["id"])
     log.info("웹 푸시: %s", "사용" if get_vapid() else "꺼짐 (cryptography 패키지 없음)")
-    loop_task = asyncio.create_task(reminder_loop())
+    log.info("자동 백업 위치: %s (최근 %d개 보관)", BACKUP_DIR, BACKUP_KEEP)
+    # 분류가 끝나지 않은 메모(서버 재시작 등) 다시 처리
+    for r in query("SELECT id FROM notes WHERE category='pending' AND deleted_at IS NULL"):
+        schedule_classification(r["id"])
+    loop_task = asyncio.create_task(background_loop())
     yield
     loop_task.cancel()
+    for task in list(_tasks):
+        task.cancel()
+    with _lock:
+        _db.close()  # 쓰기 로그(-wal)를 DB 파일에 합쳐 두어 백업·복구가 안전하도록
 
 
 app = FastAPI(title="AI 메모", lifespan=lifespan)
@@ -296,9 +438,11 @@ class NotePatch(BaseModel):
     content: Optional[str] = None
     category: Optional[str] = None
     done: Optional[bool] = None
+    pinned: Optional[bool] = None
     due_date: Optional[str] = None
     due_time: Optional[str] = None
     clear_due: Optional[bool] = None
+    repeat: Optional[dict] = None  # null 을 보내면 반복 해제
 
 
 class ItemPatch(BaseModel):
@@ -325,32 +469,42 @@ class PushUnsubIn(BaseModel):
     endpoint: str
 
 
+class ImportIn(BaseModel):
+    notes: list[dict]
+    settings: Optional[dict] = None
+
+
 @app.get("/api/config")
 async def config():
     return {"auth_required": bool(PASSWORD), "ai": classifier.ai_enabled(), "categories": classifier.CATEGORY_LABELS,
-            "push": get_vapid() is not None}
+            "sections": classifier.SECTIONS, "push": get_vapid() is not None}
 
 
 @app.post("/api/login")
-async def login(body: LoginIn):
+async def login(body: LoginIn, request: Request):
     if not PASSWORD:
         return {"token": ""}
-    if not hmac.compare_digest(body.password, PASSWORD):
+    ip = request.client.host if request.client else "?"
+    t = time.monotonic()
+    for key in [k for k, v in _login_fails.items() if t - v[-1] > LOGIN_WINDOW]:
+        del _login_fails[key]
+    fails = [f for f in _login_fails.get(ip, []) if t - f < LOGIN_WINDOW]
+    if len(fails) >= LOGIN_MAX_FAILS and t - fails[-1] < LOGIN_LOCK:
+        wait = math.ceil((LOGIN_LOCK - (t - fails[-1])) / 60)
+        raise HTTPException(429, f"비밀번호를 여러 번 틀렸습니다. {wait}분 뒤에 다시 시도하세요")
+    if not hmac.compare_digest(body.password.encode(), PASSWORD.encode()):
+        _login_fails[ip] = fails + [t]
+        await asyncio.sleep(1)
         raise HTTPException(401, "비밀번호가 틀렸습니다")
+    _login_fails.pop(ip, None)
     return {"token": make_token()}
 
 
 @app.get("/api/notes", dependencies=auth)
-async def list_notes(category: Optional[str] = None, q: Optional[str] = None):
-    sql, args = "SELECT * FROM notes WHERE 1=1", []
-    if category:
-        sql += " AND category=?"
-        args.append(category)
-    if q:
-        sql += " AND (content LIKE ? OR title LIKE ? OR tags LIKE ?)"
-        args += [f"%{q}%"] * 3
-    sql += " ORDER BY created_at DESC, id DESC"
-    return [note_dict(r) for r in query(sql, tuple(args))]
+async def list_notes():
+    items = items_by_note()
+    rows = query("SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC")
+    return [note_dict(r, items.get(r["id"], [])) for r in rows]
 
 
 @app.post("/api/notes", dependencies=auth, status_code=201)
@@ -371,35 +525,58 @@ async def create_note(body: NoteIn):
 
 @app.patch("/api/notes/{note_id}", dependencies=auth)
 async def update_note(note_id: int, body: NotePatch):
-    get_note(note_id)
-    sets, args = [], []
+    note = get_note(note_id)
+    day = today()
+    sets: dict[str, object] = {}
     if body.content is not None:
-        if not body.content.strip():
+        content = body.content.strip()
+        if not content:
             raise HTTPException(400, "내용을 입력하세요")
-        sets.append("content=?")
-        args.append(body.content.strip())
+        sets["content"] = content
     if body.category is not None:
         if body.category not in classifier.CATEGORY_LABELS:
             raise HTTPException(400, "알 수 없는 분류")
-        sets += ["category=?", "category_locked=1"]
-        args.append(body.category)
-    if body.done is not None:
-        sets.append("done=?")
-        args.append(int(body.done))
+        sets.update(category=body.category, category_locked=1)
+    if body.pinned is not None:
+        sets["pinned"] = int(body.pinned)
+
+    # 날짜·시간·반복. 하나라도 직접 바꾸면 이후 AI 재분류가 덮어쓰지 않는다 (due_locked).
+    due, due_time, rule = parse_date(note["due_date"]), note["due_time"], note["repeat"]
+    schedule = False
     if body.clear_due:
-        sets += ["due_date=NULL", "due_time=NULL", "due_locked=1"]
-    elif body.due_date is not None or body.due_time is not None:
-        sets.append("due_locked=1")  # 직접 정한 날짜는 AI가 덮어쓰지 않음
+        due = due_time = rule = None
+        schedule = True
+    else:
         if body.due_date is not None:
-            sets.append("due_date=?")
-            args.append(body.due_date or None)
+            if body.due_date and not parse_date(body.due_date):
+                raise HTTPException(400, "날짜 형식은 YYYY-MM-DD 입니다")
+            due, schedule = parse_date(body.due_date), True
         if body.due_time is not None:
-            sets.append("due_time=?")
-            args.append(body.due_time or None)
+            if body.due_time and not TIME_RE.fullmatch(body.due_time):
+                raise HTTPException(400, "시간 형식은 HH:MM 입니다")
+            due_time, schedule = body.due_time or None, True
+        if "repeat" in body.model_fields_set:
+            schedule = True
+            rule = recurrence.clean(body.repeat)
+            if rule:
+                due = due or day
+                if len(rule.get("weekdays", [])) > 1:  # 월·수·금처럼 여러 요일이면 그중 첫 날로
+                    due = recurrence.first_on_or_after(rule, due)
+                rule = recurrence.anchor(rule, due)
+    if due is None:
+        rule = None  # 반복에는 날짜가 필요
+    if body.done is not None:
+        if body.done and rule and due:
+            due, schedule = recurrence.after_done(rule, due, day), True  # 반복 일정은 다음 회차로
+            sets["done"] = 0
+        else:
+            sets["done"] = int(body.done)
+    if schedule:
+        sets.update(due_date=due.isoformat() if due else None, due_time=due_time,
+                    repeat=json.dumps(rule) if rule else None, due_locked=1)
     if sets:
-        sets.append("updated_at=?")
-        args.append(now())
-        execute(f"UPDATE notes SET {', '.join(sets)} WHERE id=?", (*args, note_id))
+        sets["updated_at"] = now()
+        execute(f"UPDATE notes SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?", (*sets.values(), note_id))
     note = get_note(note_id)
     broadcast("note", note)
     if body.content is not None:
@@ -417,20 +594,43 @@ async def reclassify(note_id: int):
 
 @app.delete("/api/notes/{note_id}", dependencies=auth)
 async def delete_note(note_id: int):
+    """휴지통으로 옮긴다 (30일 뒤 영구 삭제)."""
     get_note(note_id)
-    execute("DELETE FROM notes WHERE id=?", (note_id,))
+    ts = now()
+    execute("UPDATE notes SET deleted_at=?, updated_at=? WHERE id=?", (ts, ts, note_id))
     broadcast("delete", {"id": note_id})
+    return {"ok": True}
+
+
+@app.post("/api/notes/{note_id}/restore", dependencies=auth)
+async def restore_note(note_id: int):
+    get_note(note_id, deleted=True)
+    execute("UPDATE notes SET deleted_at=NULL, updated_at=? WHERE id=?", (now(), note_id))
+    note = get_note(note_id)
+    broadcast("note", note)
+    return note
+
+
+@app.get("/api/trash", dependencies=auth)
+async def list_trash():
+    return [note_dict(r) for r in query("SELECT * FROM notes WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC")]
+
+
+@app.delete("/api/trash", dependencies=auth)
+async def empty_trash():
+    execute("DELETE FROM notes WHERE deleted_at IS NOT NULL")
     return {"ok": True}
 
 
 @app.patch("/api/items/{item_id}", dependencies=auth)
 async def update_item(item_id: int, body: ItemPatch):
-    rows = query("SELECT note_id FROM items WHERE id=?", (item_id,))
+    rows = query("SELECT i.note_id FROM items i JOIN notes n ON n.id = i.note_id "
+                 "WHERE i.id=? AND n.deleted_at IS NULL", (item_id,))
     if not rows:
         raise HTTPException(404, "항목이 없습니다")
     execute("UPDATE items SET checked=? WHERE id=?", (int(body.checked), item_id))
     note_id = rows[0]["note_id"]
-    execute("UPDATE notes SET updated_at=? WHERE id=?", (now(), note_id))
+    touch(note_id)
     note = get_note(note_id)
     broadcast("note", note)
     return note
@@ -438,12 +638,19 @@ async def update_item(item_id: int, body: ItemPatch):
 
 @app.post("/api/shopping/clear-checked", dependencies=auth)
 async def clear_checked():
-    """체크된 장보기 항목 삭제. 항목이 모두 사라진 장보기 메모는 완료 처리."""
-    note_ids = [r["note_id"] for r in query("SELECT DISTINCT note_id FROM items WHERE checked=1")]
-    execute("DELETE FROM items WHERE checked=1")
-    for nid in note_ids:
-        if not query("SELECT 1 FROM items WHERE note_id=?", (nid,)):
-            execute("UPDATE notes SET done=1, updated_at=? WHERE id=?", (now(), nid))
+    """체크된 장보기 항목 삭제. 항목이 모두 사라진 메모는 완료 처리.
+    반복하는 장보기 목록은 지우지 않고 체크만 풀어 다음에 다시 쓴다."""
+    rows = query("SELECT DISTINCT i.note_id, n.repeat FROM items i JOIN notes n ON n.id = i.note_id "
+                 "WHERE i.checked=1 AND n.deleted_at IS NULL")
+    for r in rows:
+        nid = r["note_id"]
+        if r["repeat"]:
+            execute("UPDATE items SET checked=0 WHERE note_id=?", (nid,))
+        else:
+            execute("DELETE FROM items WHERE note_id=? AND checked=1", (nid,))
+            if not query("SELECT 1 FROM items WHERE note_id=?", (nid,)):
+                execute("UPDATE notes SET done=1 WHERE id=?", (nid,))
+        touch(nid)
         broadcast("note", get_note(nid))
     return {"ok": True}
 
@@ -455,14 +662,7 @@ async def read_settings():
 
 @app.put("/api/settings", dependencies=auth)
 async def write_settings(body: SettingsIn):
-    for key, value in body.model_dump(exclude_none=True).items():
-        value = value.strip()
-        ok = (value == "" or (value.isdigit() and int(value) <= 1440) if key == "lead"
-              else value == "" or re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value))
-        if not ok:
-            raise HTTPException(400, "잘못된 설정값")
-        execute("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value))
+    save_settings(body.model_dump(exclude_none=True))
     settings = get_settings()
     broadcast("settings", settings)
     return settings
@@ -472,7 +672,7 @@ async def write_settings(body: SettingsIn):
 async def push_key():
     vapid = get_vapid()
     if vapid is None:
-        raise HTTPException(503, "서버에 cryptography 패키지가 없어 웹 푸시를 쓸 수 없습니다")
+        raise HTTPException(501, "서버에 cryptography 패키지가 없어 웹 푸시를 쓸 수 없습니다")
     return {"key": vapid.public_b64}
 
 
@@ -499,6 +699,98 @@ async def push_test():
         key="test", title="AI 메모 알림 테스트", body="이 알림이 보이면 잘 설정된 것입니다.", tag="test"))
     return {"devices": delivered}
 
+
+# ---------------------------------------------------------------- 백업·내보내기·가져오기
+
+def data_info() -> dict:
+    files = backup_files()
+    last = datetime.fromtimestamp(files[-1].stat().st_mtime, TZ).isoformat(timespec="seconds") if files else None
+    trash = query("SELECT COUNT(*) AS n FROM notes WHERE deleted_at IS NOT NULL")[0]["n"]
+    return {"backup_dir": str(BACKUP_DIR), "backup_keep": BACKUP_KEEP, "backups": len(files),
+            "last_backup": last, "trash": trash, "trash_days": TRASH_DAYS}
+
+
+@app.get("/api/data", dependencies=auth)
+async def read_data_info():
+    return data_info()
+
+
+@app.post("/api/backup", dependencies=auth)
+async def backup_now():
+    try:
+        await asyncio.to_thread(make_backup, True)
+    except OSError as e:
+        raise HTTPException(500, f"백업하지 못했습니다: {e}")
+    return data_info()
+
+
+EXPORT_FIELDS = ("content", "title", "category", "category_locked", "due_locked", "tags", "due_date", "due_time",
+                 "repeat", "done", "pinned", "created_at", "updated_at")
+
+
+@app.get("/api/export", dependencies=auth)
+async def export_data():
+    items = items_by_note()
+    notes = []
+    for r in query("SELECT * FROM notes WHERE deleted_at IS NULL ORDER BY created_at, id"):
+        d = note_dict(r, items.get(r["id"], []))
+        notes.append({k: d[k] for k in EXPORT_FIELDS} | {
+            "items": [{k: i[k] for k in ("name", "quantity", "section", "checked")} for i in d["items"]]})
+    data = {"app": "ai-memo", "version": 2, "exported_at": now(), "settings": get_settings(), "notes": notes}
+    name = f"ai-memo-{today().isoformat()}.json"
+    return Response(json.dumps(data, ensure_ascii=False, indent=1), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/import", dependencies=auth)
+async def import_data(body: ImportIn):
+    """내보낸 파일을 가져온다. 내용과 작성 시각이 같은 메모는 이미 있는 것으로 보고 건너뛴다."""
+    added = skipped = 0
+    to_classify = []
+    with _lock:
+        for n in body.notes:
+            content = str(n.get("content") or "").strip()
+            created = str(n.get("created_at") or "") or now()
+            if not content or _db.execute("SELECT 1 FROM notes WHERE content=? AND created_at=? AND deleted_at IS NULL",
+                                          (content, created)).fetchone():
+                skipped += 1
+                continue
+            category = n.get("category") if n.get("category") in classifier.CATEGORY_LABELS else "pending"
+            due = parse_date(n.get("due_date"))
+            due_time = n.get("due_time") if isinstance(n.get("due_time"), str) and TIME_RE.fullmatch(n["due_time"]) else None
+            rule = recurrence.clean(n.get("repeat")) if due else None
+            tags = [str(t)[:30] for t in n.get("tags") if isinstance(t, (str, int))][:10] if isinstance(n.get("tags"), list) else []
+            title = str(n.get("title") or content.splitlines()[0])[:40]
+            cur = _db.execute(
+                "INSERT INTO notes (content, title, category, category_locked, due_locked, tags, due_date, due_time, "
+                "repeat, done, pinned, classified_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (content, title, category, int(bool(n.get("category_locked"))), int(bool(n.get("due_locked"))),
+                 json.dumps(tags, ensure_ascii=False), due.isoformat() if due else None, due_time,
+                 json.dumps(rule) if rule else None, int(bool(n.get("done"))), int(bool(n.get("pinned"))),
+                 "import", created, str(n.get("updated_at") or created)))
+            items = n.get("items") if isinstance(n.get("items"), list) else []
+            for i, it in enumerate(items):
+                name = str(it.get("name") or "").strip() if isinstance(it, dict) else ""
+                if not name:
+                    continue
+                section = it.get("section") if it.get("section") in classifier.SECTIONS else classifier.guess_section(name)
+                _db.execute(
+                    "INSERT INTO items (note_id, name, quantity, section, checked, position) VALUES (?,?,?,?,?,?)",
+                    (cur.lastrowid, name[:100], str(it["quantity"])[:30] if it.get("quantity") else None, section,
+                     int(bool(it.get("checked"))), i))
+            added += 1
+            if category == "pending":
+                to_classify.append(cur.lastrowid)
+        _db.commit()
+    if body.settings:
+        save_settings({k: v for k, v in body.settings.items() if k in reminders.DEFAULTS})
+    for nid in to_classify:
+        schedule_classification(nid)
+    broadcast("reload", {})
+    return {"added": added, "skipped": skipped}
+
+
+# ---------------------------------------------------------------- 실시간 연결·화면
 
 @app.get("/api/events", dependencies=auth)
 async def events(request: Request):
