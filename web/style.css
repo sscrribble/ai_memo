@@ -86,6 +86,7 @@ svg { display: block; flex: none; }
   transition: background .15s, color .15s, opacity .15s;
 }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
+.icon-btn i { display: contents; }
 
 /* ---------------------------------------------------------- 로그인 */
 .login { min-height: 100dvh; display: grid; place-items: center; padding: 16px; }
@@ -309,6 +310,40 @@ svg { display: block; flex: none; }
   max-width: calc(100% - 32px); padding: 9px 16px; border-radius: 12px; font-size: 13.5px;
   background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text); box-shadow: var(--shadow);
 }
+
+/* ---------------------------------------------------------- 알림 설정·배너 */
+.sheet {
+  width: min(420px, calc(100% - 32px)); padding: 20px; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: var(--shadow);
+}
+.sheet::backdrop { background: rgba(0, 0, 0, .55); }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; margin: -6px -8px 6px 0; }
+.sheet-head h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -.03em; }
+.set-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+.set-row > div { flex: 1; min-width: 0; }
+.set-row strong { display: block; font-size: 14.5px; font-weight: 600; }
+.set-row p { margin: 2px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.set-row select {
+  height: 34px; padding: 0 8px; border-radius: 9px; font-size: 13.5px;
+  border: 1px solid var(--border); background: var(--surface-2); outline: none;
+}
+.set-row select:focus-visible { border-color: var(--accent); }
+.set-group { margin: 4px 0 14px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.sheet > .btn { margin-left: -14px; }
+
+.banners {
+  position: fixed; top: calc(16px + env(safe-area-inset-top)); right: 16px; z-index: 30;
+  display: grid; gap: 8px; width: min(340px, calc(100% - 32px));
+}
+.banner {
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px 6px 12px 14px;
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow);
+}
+.banner > svg { margin-top: 2px; color: var(--accent); }
+.banner div { flex: 1; min-width: 0; }
+.banner strong { display: block; font-size: 14px; font-weight: 600; }
+.banner p { margin: 2px 0 0; font-size: 13px; color: var(--text-2); white-space: pre-line; }
+.banner .icon-btn { width: 28px; height: 28px; margin-top: -4px; }
 
 /* ---------------------------------------------------------- 휴대폰·태블릿 */
 @media (max-width: 859px) {

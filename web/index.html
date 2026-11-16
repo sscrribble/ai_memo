@@ -58,6 +58,7 @@
             <i data-icon="search"></i>
             <input id="search" type="search" placeholder="검색" aria-label="검색">
           </label>
+          <button class="icon-btn" id="bell" type="button" aria-label="알림 설정"><i data-icon="bell"></i></button>
           <button class="icon-btn theme-toggle only-mobile" type="button" aria-label="밝은/어두운 화면 전환"></button>
         </header>
 
@@ -76,6 +77,24 @@
     </div>
   </div>
 
+  <dialog id="notify" class="sheet" aria-labelledby="notify-title">
+    <div class="sheet-head">
+      <h2 id="notify-title">알림</h2>
+      <button class="icon-btn" id="notify-close" type="button" aria-label="닫기"><i data-icon="close"></i></button>
+    </div>
+    <div class="set-row">
+      <div><strong>이 기기에서 알림 받기</strong><p id="push-status"></p></div>
+      <button class="btn" id="push-toggle" type="button"></button>
+    </div>
+    <div class="set-group">
+      <label class="set-row"><div><strong>아침 요약</strong><p>오늘 할 일과 지난 일을 한 번에</p></div><select id="set-morning"></select></label>
+      <label class="set-row"><div><strong>전날 알림</strong><p>내일 일정과 마감</p></div><select id="set-evening"></select></label>
+      <label class="set-row"><div><strong>일정 직전 알림</strong><p>시간이 정해진 일정</p></div><select id="set-lead"></select></label>
+    </div>
+    <button class="btn ghost" id="push-test" type="button">테스트 알림 보내기</button>
+  </dialog>
+
+  <div id="banners" class="banners" aria-live="polite"></div>
   <div id="toast" class="toast" hidden></div>
   <script src="/app.js"></script>
 </body>

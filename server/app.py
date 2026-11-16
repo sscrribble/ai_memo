@@ -7,10 +7,11 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import classifier
+import reminders
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("memo")
@@ -31,6 +33,8 @@ DB_PATH = Path(os.getenv("MEMO_DB", ROOT / "data" / "memo.db"))
 TZ = ZoneInfo(os.getenv("MEMO_TZ", "Asia/Seoul"))
 PASSWORD = os.getenv("MEMO_PASSWORD", "")
 SECRET = os.getenv("MEMO_SECRET", PASSWORD or "dev")
+# 웹 푸시 서비스에 알리는 서버 운영자 연락처 (mailto: 또는 https: 주소)
+CONTACT = os.getenv("MEMO_CONTACT", "mailto:admin@example.com")
 
 
 # ---------------------------------------------------------------- DB
@@ -68,6 +72,14 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS idx_notes_due ON notes(due_date);
 CREATE INDEX IF NOT EXISTS idx_items_note ON items(note_id);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS push_subs (
+    endpoint TEXT PRIMARY KEY,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reminders_sent (key TEXT PRIMARY KEY, sent_at TEXT NOT NULL);
 -- 수정될 때마다 rev 증가: 기기들이 오래된 응답으로 최신 상태를 덮어쓰지 않게 함
 CREATE TRIGGER IF NOT EXISTS notes_rev AFTER UPDATE ON notes BEGIN
     UPDATE notes SET rev = OLD.rev + 1 WHERE id = NEW.id;
@@ -184,6 +196,74 @@ def schedule_classification(note_id: int) -> None:
     task.add_done_callback(_tasks.discard)
 
 
+# ---------------------------------------------------------------- 알림
+
+def get_settings() -> dict:
+    s = dict(reminders.DEFAULTS)
+    s.update({r["key"]: r["value"] for r in query("SELECT key, value FROM settings") if r["key"] in s})
+    return s
+
+
+_vapid: Optional["reminders.Vapid"] = None
+
+
+def get_vapid() -> Optional["reminders.Vapid"]:
+    """웹 푸시용 서버 키. 처음 한 번 만들어 DB에 보관한다."""
+    global _vapid
+    if _vapid is None and reminders.HAVE_CRYPTO:
+        rows = query("SELECT value FROM settings WHERE key='vapid_private'")
+        _vapid = reminders.Vapid(rows[0]["value"] if rows else None)
+        if not rows:
+            execute("INSERT INTO settings (key, value) VALUES ('vapid_private', ?)", (_vapid.private_b64,))
+    return _vapid
+
+
+async def deliver(rem: reminders.Reminder) -> int:
+    """알림 하나를 모든 경로로 보낸다. 웹 푸시가 전달된 기기 수를 돌려준다."""
+    log.info("알림: %s", rem.title)
+    payload = {"title": rem.title, "body": rem.body, "tag": rem.tag}
+    broadcast("reminder", payload)  # 앱을 열어 둔 기기에는 화면 안에서 표시
+    delivered = 0
+    subs = [dict(r) for r in query("SELECT * FROM push_subs")]
+    vapid = get_vapid()
+    if subs and vapid:
+        data = json.dumps(payload, ensure_ascii=False).encode()
+        results = await asyncio.gather(
+            *(asyncio.to_thread(reminders.send_web_push, s, data, vapid, CONTACT) for s in subs),
+            return_exceptions=True)
+        for sub, res in zip(subs, results):
+            if res in (404, 410):  # 기기에서 알림을 껐거나 구독이 만료됨
+                execute("DELETE FROM push_subs WHERE endpoint=?", (sub["endpoint"],))
+            elif isinstance(res, Exception) or res >= 400:
+                log.warning("웹 푸시 실패 (%s): %s", sub["endpoint"][:60], res)
+            else:
+                delivered += 1
+    await asyncio.to_thread(reminders.send_local, rem)
+    return delivered
+
+
+async def check_reminders() -> None:
+    current = datetime.now(TZ)
+    notes = [dict(r) for r in query(
+        "SELECT id, title, due_date, due_time FROM notes WHERE done=0 AND due_date IS NOT NULL")]
+    for rem in reminders.due_reminders(notes, current, get_settings()):
+        if query("SELECT 1 FROM reminders_sent WHERE key=?", (rem.key,)):
+            continue
+        execute("INSERT INTO reminders_sent (key, sent_at) VALUES (?,?)", (rem.key, now()))
+        await deliver(rem)
+
+
+async def reminder_loop() -> None:
+    execute("DELETE FROM reminders_sent WHERE sent_at < ?",
+            ((datetime.now(TZ) - timedelta(days=60)).isoformat(timespec="seconds"),))
+    while True:
+        try:
+            await check_reminders()
+        except Exception:
+            log.exception("알림 확인 중 오류")
+        await asyncio.sleep(30)
+
+
 # ---------------------------------------------------------------- 앱
 
 @asynccontextmanager
@@ -194,7 +274,10 @@ async def lifespan(_: FastAPI):
     # 분류가 끝나지 않은 메모(서버 재시작 등) 다시 처리
     for r in query("SELECT id FROM notes WHERE category='pending'"):
         schedule_classification(r["id"])
+    log.info("웹 푸시: %s", "사용" if get_vapid() else "꺼짐 (cryptography 패키지 없음)")
+    loop_task = asyncio.create_task(reminder_loop())
     yield
+    loop_task.cancel()
 
 
 app = FastAPI(title="AI 메모", lifespan=lifespan)
@@ -222,9 +305,30 @@ class ItemPatch(BaseModel):
     checked: bool
 
 
+class SettingsIn(BaseModel):
+    morning: Optional[str] = None
+    evening: Optional[str] = None
+    lead: Optional[str] = None
+
+
+class PushKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class PushSubIn(BaseModel):
+    endpoint: str
+    keys: PushKeys
+
+
+class PushUnsubIn(BaseModel):
+    endpoint: str
+
+
 @app.get("/api/config")
 async def config():
-    return {"auth_required": bool(PASSWORD), "ai": classifier.ai_enabled(), "categories": classifier.CATEGORY_LABELS}
+    return {"auth_required": bool(PASSWORD), "ai": classifier.ai_enabled(), "categories": classifier.CATEGORY_LABELS,
+            "push": get_vapid() is not None}
 
 
 @app.post("/api/login")
@@ -342,6 +446,58 @@ async def clear_checked():
             execute("UPDATE notes SET done=1, updated_at=? WHERE id=?", (now(), nid))
         broadcast("note", get_note(nid))
     return {"ok": True}
+
+
+@app.get("/api/settings", dependencies=auth)
+async def read_settings():
+    return get_settings()
+
+
+@app.put("/api/settings", dependencies=auth)
+async def write_settings(body: SettingsIn):
+    for key, value in body.model_dump(exclude_none=True).items():
+        value = value.strip()
+        ok = (value == "" or (value.isdigit() and int(value) <= 1440) if key == "lead"
+              else value == "" or re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value))
+        if not ok:
+            raise HTTPException(400, "잘못된 설정값")
+        execute("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value))
+    settings = get_settings()
+    broadcast("settings", settings)
+    return settings
+
+
+@app.get("/api/push/key", dependencies=auth)
+async def push_key():
+    vapid = get_vapid()
+    if vapid is None:
+        raise HTTPException(503, "서버에 cryptography 패키지가 없어 웹 푸시를 쓸 수 없습니다")
+    return {"key": vapid.public_b64}
+
+
+@app.post("/api/push/subscribe", dependencies=auth)
+async def push_subscribe(body: PushSubIn):
+    if not body.endpoint.startswith("https://"):
+        raise HTTPException(400, "잘못된 구독 정보")
+    execute(
+        "INSERT INTO push_subs (endpoint, p256dh, auth, created_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth",
+        (body.endpoint, body.keys.p256dh, body.keys.auth, now()))
+    return {"ok": True}
+
+
+@app.post("/api/push/unsubscribe", dependencies=auth)
+async def push_unsubscribe(body: PushUnsubIn):
+    execute("DELETE FROM push_subs WHERE endpoint=?", (body.endpoint,))
+    return {"ok": True}
+
+
+@app.post("/api/push/test", dependencies=auth)
+async def push_test():
+    delivered = await deliver(reminders.Reminder(
+        key="test", title="AI 메모 알림 테스트", body="이 알림이 보이면 잘 설정된 것입니다.", tag="test"))
+    return {"devices": delivered}
 
 
 @app.get("/api/events", dependencies=auth)

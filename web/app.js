@@ -12,6 +12,7 @@ const S = {
   calSel: ymd(new Date()),
   editing: null,
   menu: null,
+  pushOn: false,
   es: null,
 };
 const OUTBOX_KEY = "memo_outbox";
@@ -39,6 +40,8 @@ const ICON = {
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   sparkle: '<path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 16v4M17 18h4"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10.3 20a1.9 1.9 0 0 0 3.4 0"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
   prev: '<path d="m15 18-6-6 6-6"/>',
   next: '<path d="m9 18 6-6-6-6"/>',
 };
@@ -69,6 +72,7 @@ async function api(path, opts = {}) {
 
 function toast(msg) {
   const t = $("#toast");
+  ($("#notify").open ? $("#notify") : document.body).append(t); // 설정 창이 열려 있으면 그 위에 표시
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toast._t);
@@ -116,6 +120,7 @@ async function showApp() {
   setView(S.view);
   await reload();
   connect();
+  syncPush().catch(() => {});
 }
 
 async function reload() {
@@ -143,6 +148,12 @@ function connect() {
     reload(); // 끊겼던 동안의 변경사항 반영
   });
   es.addEventListener("note", (e) => update(JSON.parse(e.data)));
+  es.addEventListener("reminder", (e) => {
+    // 푸시를 켠 기기는 시스템 알림으로 받으므로, 그렇지 않은 기기만 화면 안에 표시
+    const r = JSON.parse(e.data);
+    if (!S.pushOn) banner(r.title, r.body);
+  });
+  es.addEventListener("settings", (e) => { if ($("#notify").open) fillSettings(JSON.parse(e.data)); });
   es.addEventListener("delete", (e) => {
     S.notes.delete(JSON.parse(e.data).id);
     render();
@@ -532,6 +543,118 @@ function update(n) {
   const cur = S.notes.get(n.id);
   if (!cur || cur.rev <= n.rev) S.notes.set(n.id, n);
   render();
+}
+
+// ------------------------------------------------------------ 알림
+const pushSupported = () =>
+  window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const b64ToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+const bytesToB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function currentSub() {
+  return (await navigator.serviceWorker.ready).pushManager.getSubscription();
+}
+
+// 이 기기를 서버에 등록한다. 서버 키가 바뀌었으면(DB를 새로 만든 경우) 구독을 다시 만든다.
+async function subscribePush() {
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await api("/api/push/key");
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && (!sub.options.applicationServerKey || bytesToB64(sub.options.applicationServerKey) !== key)) {
+    await sub.unsubscribe();
+    sub = null;
+  }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+  await api("/api/push/subscribe", { method: "POST", body: sub.toJSON() });
+  S.pushOn = true;
+}
+
+// 앱을 열 때: 전에 알림을 켠 기기면 등록 상태를 다시 맞춘다
+async function syncPush() {
+  if (!S.config.push || !pushSupported() || Notification.permission !== "granted") return;
+  if (await currentSub()) await subscribePush();
+}
+
+function renderPushState() {
+  const status = $("#push-status");
+  const btn = $("#push-toggle");
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  let msg = "";
+  if (!S.config.push) msg = "서버에 웹 푸시가 설정되지 않았습니다.";
+  else if (!window.isSecureContext) msg = "HTTPS 주소로 접속해야 켤 수 있습니다. 지금은 앱을 열어 둔 동안에만 화면 안에서 알려드립니다.";
+  else if (!pushSupported()) msg = ios ? "공유 버튼 → '홈 화면에 추가'로 설치한 뒤, 설치한 앱에서 켤 수 있습니다." : "이 브라우저는 알림을 지원하지 않습니다.";
+  else if (Notification.permission === "denied") msg = "알림이 차단되어 있습니다. 브라우저 설정에서 이 사이트의 알림을 허용해 주세요.";
+  btn.hidden = !!msg;
+  status.textContent = msg || (S.pushOn ? "앱을 닫아도 알림이 옵니다." : "앱을 닫아도 일정과 마감을 알려드립니다.");
+  btn.textContent = S.pushOn ? "끄기" : "켜기";
+  btn.classList.toggle("primary", !S.pushOn);
+}
+
+$("#push-toggle").addEventListener("click", async () => {
+  try {
+    if (S.pushOn) {
+      const sub = await currentSub();
+      if (sub) {
+        await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: sub.endpoint } });
+        await sub.unsubscribe();
+      }
+      S.pushOn = false;
+    } else if ((await Notification.requestPermission()) === "granted") {
+      await subscribePush();
+      toast("이 기기에서 알림을 받습니다");
+    }
+  } catch (err) {
+    toast(`알림을 켤 수 없습니다: ${err.message}`);
+  }
+  renderPushState();
+});
+
+const SET_OPTS = {
+  morning: [["", "끄기"], ...["06:00", "07:00", "08:00", "09:00", "10:00"].map((t) => [t, t])],
+  evening: [["", "끄기"], ...["18:00", "19:00", "20:00", "21:00", "22:00"].map((t) => [t, t])],
+  lead: [["", "끄기"], ["0", "정각"], ["10", "10분 전"], ["30", "30분 전"], ["60", "1시간 전"], ["120", "2시간 전"]],
+};
+function fillSettings(s) {
+  for (const [key, base] of Object.entries(SET_OPTS)) {
+    const opts = base.some(([v]) => v === s[key]) ? base : [...base, [s[key], s[key]]];
+    const sel = $(`#set-${key}`);
+    sel.innerHTML = opts.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("");
+    sel.value = s[key];
+  }
+}
+for (const key of Object.keys(SET_OPTS)) {
+  $(`#set-${key}`).addEventListener("change", async (e) => {
+    try { await api("/api/settings", { method: "PUT", body: { [key]: e.target.value } }); toast("저장했습니다"); }
+    catch (err) { toast(err.message); }
+  });
+}
+
+$("#bell").addEventListener("click", async () => {
+  try {
+    fillSettings(await api("/api/settings"));
+    renderPushState();
+    $("#notify").showModal();
+  } catch (err) { toast(err.message); }
+});
+$("#notify-close").addEventListener("click", () => $("#notify").close());
+$("#notify").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+$("#push-test").addEventListener("click", async () => {
+  try {
+    const { devices } = await api("/api/push/test", { method: "POST" });
+    toast(devices ? `알림을 켠 기기 ${devices}대로 보냈습니다` : "알림을 켠 기기가 없어 화면 안에만 표시했습니다");
+  } catch (err) { toast(err.message); }
+});
+
+function banner(title, body) {
+  const el = document.createElement("div");
+  el.className = "banner";
+  el.setAttribute("role", "status");
+  el.innerHTML = `${svg(ICON.bell)}<div><strong>${esc(title)}</strong>${body ? `<p>${esc(body)}</p>` : ""}</div>
+    <button class="icon-btn" aria-label="닫기">${svg(ICON.close, 16)}</button>`;
+  el.querySelector("button").addEventListener("click", () => el.remove());
+  // 놓치지 않도록 닫을 때까지 남겨 두되, 너무 쌓이면 오래된 것부터 지운다
+  $("#banners").prepend(el);
+  [...$("#banners").children].slice(4).forEach((old) => old.remove());
 }
 
 // ------------------------------------------------------------ PWA

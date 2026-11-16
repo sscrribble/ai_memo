@@ -13,6 +13,10 @@
 - **장보기**: 모든 장보기 항목을 한곳에서 체크하고, 체크한 항목은 한 번에 지우기
 - **편집**: 메모의 ⋯ 메뉴에서 내용과 날짜·시간을 고칠 수 있습니다 (직접 정한 날짜는 AI가 덮어쓰지 않음)
 - **화면**: 어두운 화면이 기본이고, 해/달 버튼으로 밝은 화면으로 바꿀 수 있습니다
+- **알림**: 서버가 일정을 확인해 자동으로 알려줍니다 (종 버튼에서 시간 변경·끄기)
+  - 아침 요약(기본 08:00): 오늘 할 일과 지난 일
+  - 전날 알림(기본 20:00): 내일 일정과 마감
+  - 일정 직전 알림(기본 30분 전): 시간이 정해진 일정
 - **실시간 동기화**: 한 기기에서 고치면 다른 기기 화면에 바로 반영
 - **앱처럼 설치**: 휴대폰/태블릿에서 "홈 화면에 추가"하면 앱처럼 실행됩니다. 오프라인일 때 쓴 메모는 연결되면 자동 저장
 - API 키가 없으면 키워드 규칙으로 분류합니다 (정확도는 떨어짐)
@@ -42,6 +46,19 @@ MEMO_PASSWORD=비밀번호 ANTHROPIC_API_KEY=sk-ant-... uvicorn app:app --host 0
 - **밖에서도**: 클라우드 VPS(AWS Lightsail, Oracle Cloud 무료 등)에 올리거나, 집 PC에 [Tailscale](https://tailscale.com)을 설치해 기기끼리 연결
 - 인터넷에 공개할 땐 반드시 `MEMO_PASSWORD`를 설정하고 HTTPS(Caddy, Cloudflare Tunnel 등)를 앞에 두세요. 휴대폰 "홈 화면에 추가"도 HTTPS여야 제대로 동작합니다
 
+## 알림 받는 방법
+
+| 방법 | 조건 | 설정 |
+|---|---|---|
+| 화면 안 알림 | 앱을 열어 둔 동안 | 없음 |
+| 웹 푸시 (앱을 닫아도 옴) | **HTTPS 주소**로 접속. 아이폰·아이패드는 "홈 화면에 추가"로 설치한 앱에서만 | 종 버튼 → "이 기기에서 알림 받기" 켜기 (기기마다 한 번) |
+| 서버 휴대폰 알림 | 서버를 안드로이드 Termux에서 실행, Termux:API 앱과 `pkg install termux-api` | 없음 (자동) |
+| ntfy 앱 | 받을 기기에 ntfy 앱 설치 | `MEMO_NTFY_URL` 설정 후 앱에서 같은 주제 구독 |
+
+- 웹 푸시 내용은 받는 기기까지 암호화되어 중간 푸시 서비스가 볼 수 없습니다. ntfy는 내용이 ntfy 서버를 그대로 거칩니다.
+- 완료한 일은 알리지 않고, 같은 알림은 한 번만 보냅니다. 서버가 꺼져 있던 시간의 알림은 요약은 3시간 안에 켜지면 뒤늦게 보내고, 지난 일정 알림은 보내지 않습니다.
+- Termux에서 웹 푸시까지 쓰려면 `pkg install python-cryptography`가 필요합니다. 없어도 나머지 알림은 동작합니다.
+
 ## 설정 (환경변수)
 
 | 이름 | 설명 | 기본값 |
@@ -50,6 +67,8 @@ MEMO_PASSWORD=비밀번호 ANTHROPIC_API_KEY=sk-ant-... uvicorn app:app --host 0
 | `ANTHROPIC_API_KEY` | Claude API 키 ([발급](https://console.anthropic.com)) | 없음 → 규칙 기반 |
 | `MEMO_MODEL` | 분류에 쓸 Claude 모델 | `claude-opus-5-5` |
 | `MEMO_TZ` | "오늘/내일" 계산 기준 시간대 | `Asia/Seoul` |
+| `MEMO_NTFY_URL` | ntfy 알림 주소 (예: `https://ntfy.sh/긴-이름`) | 없음 |
+| `MEMO_CONTACT` | 웹 푸시 서비스에 알리는 연락처 (`mailto:` 또는 `https:`) | `mailto:admin@example.com` |
 | `MEMO_DB` | DB 파일 경로 | `data/memo.db` |
 
 AI 호출은 메모를 저장하거나 수정할 때만 한 번씩 합니다. 비용을 더 줄이려면 `MEMO_MODEL=claude-haiku-5-5`로 바꾸세요.
@@ -58,6 +77,7 @@ AI 호출은 메모를 저장하거나 수정할 때만 한 번씩 합니다. �
 
 ```
 server/app.py         FastAPI 서버: REST API, SSE 실시간 동기화, 로그인
+server/reminders.py   알림 시점 계산, 웹 푸시·Termux·ntfy 발송
 server/classifier.py  Claude 분류(구조화 출력) + 규칙 기반 대체 분류
 web/                  웹앱(PWA): 바닐라 JS, 빌드 과정 없음
 ```
