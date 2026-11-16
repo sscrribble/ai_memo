@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS notes (
     title TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL DEFAULT 'pending',
     category_locked INTEGER NOT NULL DEFAULT 0,
+    due_locked INTEGER NOT NULL DEFAULT 0,
     tags TEXT NOT NULL DEFAULT '[]',
     due_date TEXT,
     due_time TEXT,
@@ -72,6 +73,10 @@ CREATE TRIGGER IF NOT EXISTS notes_rev AFTER UPDATE ON notes BEGIN
     UPDATE notes SET rev = OLD.rev + 1 WHERE id = NEW.id;
 END;
 """)
+# 이전 버전에서 만든 DB에 새 컬럼 추가
+if "due_locked" not in {r["name"] for r in _db.execute("PRAGMA table_info(notes)")}:
+    _db.execute("ALTER TABLE notes ADD COLUMN due_locked INTEGER NOT NULL DEFAULT 0")
+    _db.commit()
 
 
 def now() -> str:
@@ -138,17 +143,24 @@ def require_auth(request: Request) -> None:
 # ---------------------------------------------------------------- AI 분류 (백그라운드)
 
 async def classify_note(note_id: int) -> None:
-    rows = query("SELECT content, category_locked, category FROM notes WHERE id=?", (note_id,))
+    rows = query("SELECT content FROM notes WHERE id=?", (note_id,))
     if not rows:
         return
-    content, locked, old_category = rows[0]["content"], rows[0]["category_locked"], rows[0]["category"]
-    result, method = await classifier.classify(content, datetime.now(TZ).date())
+    result, method = await classifier.classify(rows[0]["content"], datetime.now(TZ).date())
     with _lock:
+        # AI 응답을 기다리는 동안 사용자가 직접 고친 분류·날짜는 그대로 둔다
+        cur = _db.execute(
+            "SELECT category, category_locked, due_date, due_time, due_locked FROM notes WHERE id=?",
+            (note_id,)).fetchone()
+        if cur is None:
+            return
+        category = cur["category"] if cur["category_locked"] else result.category
+        due_date, due_time = ((cur["due_date"], cur["due_time"]) if cur["due_locked"]
+                              else (result.due_date, result.due_time))
         _db.execute(
             "UPDATE notes SET title=?, category=?, tags=?, due_date=?, due_time=?, classified_by=?, updated_at=? WHERE id=?",
-            (result.title, old_category if locked else result.category,
-             json.dumps(result.tags, ensure_ascii=False), result.due_date, result.due_time,
-             method, now(), note_id),
+            (result.title, category, json.dumps(result.tags, ensure_ascii=False),
+             due_date, due_time, method, now(), note_id),
         )
         # 체크 상태는 이름이 같은 항목끼리 유지
         checked = {r["name"] for r in _db.execute(
@@ -271,8 +283,9 @@ async def update_note(note_id: int, body: NotePatch):
         sets.append("done=?")
         args.append(int(body.done))
     if body.clear_due:
-        sets += ["due_date=NULL", "due_time=NULL"]
-    else:
+        sets += ["due_date=NULL", "due_time=NULL", "due_locked=1"]
+    elif body.due_date is not None or body.due_time is not None:
+        sets.append("due_locked=1")  # 직접 정한 날짜는 AI가 덮어쓰지 않음
         if body.due_date is not None:
             sets.append("due_date=?")
             args.append(body.due_date or None)
@@ -293,7 +306,7 @@ async def update_note(note_id: int, body: NotePatch):
 @app.post("/api/notes/{note_id}/reclassify", dependencies=auth)
 async def reclassify(note_id: int):
     get_note(note_id)
-    execute("UPDATE notes SET category_locked=0 WHERE id=?", (note_id,))
+    execute("UPDATE notes SET category_locked=0, due_locked=0 WHERE id=?", (note_id,))
     schedule_classification(note_id)
     return {"ok": True}
 

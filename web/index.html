@@ -1,22 +1,31 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#4f46e5">
+  <meta name="theme-color" content="#0d0d10">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="AI 메모">
   <title>AI 메모</title>
+  <script>
+    // 첫 화면이 깜빡이지 않도록 테마를 먼저 적용 (기본: 다크)
+    try { document.documentElement.dataset.theme = localStorage.getItem("memo_theme") || "dark"; } catch (e) {}
+  </script>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="stylesheet" href="/style.css">
+  <!-- 글꼴은 인터넷이 될 때만 불러오고, 안 되면 기기 기본 글꼴 사용 -->
+  <link rel="stylesheet" media="print" onload="this.media='all'"
+        href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 </head>
 <body>
   <div id="login" class="login" hidden>
     <form id="login-form" class="login-box">
-      <img src="/icon.svg" alt="" width="56" height="56">
+      <img src="/icon.svg" alt="" width="52" height="52">
       <h1>AI 메모</h1>
+      <p class="login-sub">비밀번호를 입력하세요</p>
       <input id="login-pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
       <button type="submit" class="btn primary">로그인</button>
       <p id="login-err" class="err"></p>
@@ -24,30 +33,47 @@
   </div>
 
   <div id="app" class="app" hidden>
-    <header class="top">
-      <div class="brand"><img src="/icon.svg" alt="" width="26" height="26"> AI 메모
-        <span id="sync" class="sync" title="동기화 상태"></span></div>
-      <input id="search" type="search" placeholder="검색">
-    </header>
+    <aside class="side">
+      <div class="brand"><img src="/icon.svg" alt="" width="28" height="28"><span>AI 메모</span></div>
+      <nav class="nav" id="nav">
+        <button data-view="all"><i data-icon="notes"></i><span>전체</span></button>
+        <button data-view="todo"><i data-icon="check"></i><span>할 일</span><span class="count" data-count="todo"></span></button>
+        <button data-view="calendar"><i data-icon="calendar"></i><span>캘린더</span></button>
+        <button data-view="shopping"><i data-icon="cart"></i><span>장보기</span><span class="count" data-count="shopping"></span></button>
+      </nav>
+      <div class="side-foot">
+        <span class="sync-label"><span class="sync"></span><span class="sync-text">연결 중</span></span>
+        <button class="icon-btn theme-toggle" type="button" aria-label="밝은/어두운 화면 전환"></button>
+      </div>
+    </aside>
 
-    <nav class="tabs" id="tabs">
-      <button data-view="all" class="active"><span class="ic">🗒️</span>전체</button>
-      <button data-view="todo"><span class="ic">✅</span>할 일</button>
-      <button data-view="calendar"><span class="ic">📅</span>캘린더</button>
-      <button data-view="shopping"><span class="ic">🛒</span>장보기</button>
-    </nav>
+    <div class="main">
+      <div class="main-inner">
+        <header class="top">
+          <div class="heading">
+            <p class="today" id="today"></p>
+            <h1 id="view-title"></h1>
+          </div>
+          <label class="search">
+            <i data-icon="search"></i>
+            <input id="search" type="search" placeholder="검색" aria-label="검색">
+          </label>
+          <button class="icon-btn theme-toggle only-mobile" type="button" aria-label="밝은/어두운 화면 전환"></button>
+        </header>
 
-    <main>
-      <form id="compose" class="compose">
-        <textarea id="compose-text" rows="2" placeholder="무엇이든 적으세요. AI가 알아서 분류합니다.&#10;예) 내일 3시 치과 / 우유, 계란 사기"></textarea>
-        <div class="compose-bar">
-          <span id="ai-hint" class="hint"></span>
-          <button type="submit" class="btn primary">저장</button>
-        </div>
-      </form>
+        <form id="compose" class="compose">
+          <textarea id="compose-text" rows="2" aria-label="새 메모"
+                    placeholder="무엇이든 적으세요.&#10;예) 내일 3시 치과 / 우유, 계란 사기"></textarea>
+          <div class="compose-bar">
+            <span id="ai-hint" class="hint"></span>
+            <span class="kbd">Ctrl + Enter</span>
+            <button type="submit" class="btn primary">저장</button>
+          </div>
+        </form>
 
-      <section id="view"></section>
-    </main>
+        <section id="view"></section>
+      </div>
+    </div>
   </div>
 
   <div id="toast" class="toast" hidden></div>

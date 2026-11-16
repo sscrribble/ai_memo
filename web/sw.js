@@ -1,5 +1,5 @@
 // 앱 화면(정적 파일)을 캐시해 오프라인에서도 열리게 한다. API는 항상 네트워크.
-const CACHE = "ai-memo-v1";
+const CACHE = "ai-memo-v2";
 const SHELL = ["/", "/style.css", "/app.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -11,7 +11,7 @@ self.addEventListener("activate", (e) => {
 });
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
+  if (e.request.method !== "GET" || url.origin !== location.origin || url.pathname.startsWith("/api/")) return;
   // 네트워크 우선, 실패 시 캐시
   e.respondWith(
     fetch(e.request)
