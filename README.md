@@ -31,19 +31,57 @@
 
 ## 실행
 
-### Docker (권장)
+### 안드로이드 휴대폰을 서버로
+
+아이폰은 서버로 쓸 수 없습니다 (앱이 뒤에서 계속 돌 수 없음). 아래는 안드로이드 기준입니다.
+
+**1. 앱 설치** — [F-Droid](https://f-droid.org)에서 세 앱을 받습니다. 셋 다 같은 곳에서 받아야 서로 연결됩니다.
+- **Termux**: 서버가 돌아가는 곳
+- **Termux:API**: 이 휴대폰에 일정 알림 띄우기
+- **Termux:Boot**: 휴대폰을 껐다 켜도 서버 자동 시작 (설치 후 한 번 열어 두기)
+
+**2. 설치** — Termux를 열고 아래 한 줄을 붙여 넣습니다. 처음엔 10분 안팎 걸립니다.
+
+```bash
+pkg install -y git && git clone https://github.com/sscrribble/ai_memo ~/ai_memo && bash ~/ai_memo/scripts/termux-install.sh
+```
+
+중간에 묻는 것:
+- 접속 비밀번호: 다른 기기에서 로그인할 때 씁니다
+- Claude API 키: 없으면 Enter (키워드로 분류). 나중에 `nano ~/ai_memo/.env`로 넣을 수 있습니다
+- 저장소 권한: '허용'하면 백업이 휴대폰 `Documents/ai-memo-backup` 폴더에 쌓여, 앱을 지워도 남습니다
+
+**3. 휴대폰 설정 (꼭)** — 설정 → 애플리케이션 → Termux → 배터리 → **제한 없음**. 안 하면 화면이 꺼졌을 때 서버가 멈춥니다.
+
+**4. 접속** — 서버를 시작하면 주소가 나옵니다 (예: `http://192.168.0.23:8000`). 같은 Wi-Fi의 노트북·태블릿 브라우저에서 이 주소로 들어가 로그인하면 됩니다.
+- 밖에서도 쓰려면: 서버 휴대폰과 다른 기기 모두에 [Tailscale](https://tailscale.com) 앱을 설치하고 같은 계정으로 로그인한 뒤, Tailscale 앱에 나오는 서버 휴대폰 주소(`100.x.x.x`)로 접속합니다. 이 주소는 바뀌지 않습니다
+- 다른 기기에서 앱처럼 쓰려면 브라우저 메뉴의 "홈 화면에 추가"
+
+| 하고 싶은 것 | 명령 (Termux에서) |
+|---|---|
+| 서버 시작 | `bash ~/ai_memo/scripts/start.sh` |
+| 서버 멈춤 | `bash ~/ai_memo/scripts/stop.sh` |
+| 새 버전으로 업데이트 | `bash ~/ai_memo/scripts/termux-install.sh` (설정은 그대로) |
+| 비밀번호·API 키 바꾸기 | `nano ~/ai_memo/.env` 후 서버 다시 시작 |
+| 자동 시작된 서버의 기록 보기 | `tail -f ~/ai_memo/data/server.log` |
+
+### Docker (PC·클라우드 서버)
 
 ```bash
 cp .env.example .env   # 비밀번호와 ANTHROPIC_API_KEY 입력
 docker compose up -d --build
 ```
 
-### 직접 실행
+### 직접 실행 (리눅스·맥)
 
 ```bash
 pip install -r requirements.txt
-cd server
-MEMO_PASSWORD=비밀번호 ANTHROPIC_API_KEY=sk-ant-... uvicorn app:app --host 0.0.0.0 --port 8000
+```
+```bash
+cp .env.example .env   # 비밀번호와 ANTHROPIC_API_KEY 입력
+```
+```bash
+bash scripts/start.sh
 ```
 
 브라우저에서 `http://서버주소:8000` 접속. 데이터는 `data/memo.db`(SQLite) 하나에 저장됩니다.
@@ -53,8 +91,7 @@ MEMO_PASSWORD=비밀번호 ANTHROPIC_API_KEY=sk-ant-... uvicorn app:app --host 0
 - **자동**: 하루 한 번 `data/backups/memo-날짜.db`로 복사하고 최근 14개만 남깁니다 (`MEMO_BACKUP_DIR`, `MEMO_BACKUP_KEEP`으로 변경)
 - **복구**: 서버를 끄고, `data/memo.db-wal`·`data/memo.db-shm` 파일이 있으면 지운 다음, 백업 파일을 `data/memo.db`로 복사하고 다시 켭니다
 - **파일로**: 설정 → 백업 → 내보내기로 JSON 파일을 받고, 다른 서버에서 가져오기로 넣습니다. 이미 있는 메모는 건너뜁니다
-- 휴대폰(Termux)이 서버라면 앱을 지워도 남도록 공용 저장소에 백업하세요:
-  `MEMO_BACKUP_DIR=~/storage/shared/Documents/ai-memo-backup` (`termux-setup-storage` 필요)
+- 휴대폰 설치 스크립트에서 저장소 권한을 허용했다면 백업은 휴대폰 `Documents/ai-memo-backup` 폴더에 쌓입니다
 
 ## 여러 기기에서 접속하려면
 
@@ -99,4 +136,5 @@ server/reminders.py   알림 시점 계산, 웹 푸시·Termux·ntfy 발송
 server/recurrence.py  반복 일정 계산 (web/recur.js 와 같은 규칙)
 server/classifier.py  Claude 분류(구조화 출력) + 규칙 기반 대체 분류
 web/                  웹앱(PWA): 바닐라 JS, 빌드 과정 없음
+scripts/              휴대폰 설치(termux-install.sh), 서버 시작·멈춤(start.sh, stop.sh)
 ```

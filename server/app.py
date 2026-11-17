@@ -407,7 +407,12 @@ async def background_loop() -> None:
 async def lifespan(_: FastAPI):
     if not PASSWORD:
         log.warning("MEMO_PASSWORD 가 설정되지 않아 누구나 접속할 수 있습니다. 외부 공개 시 반드시 설정하세요.")
-    log.info("AI 분류: %s", f"사용 ({classifier.MODEL})" if classifier.ai_enabled() else "꺼짐 (ANTHROPIC_API_KEY 없음 → 규칙 기반)")
+    if classifier.ai_enabled():
+        log.info("AI 분류: 사용 (%s)", classifier.MODEL)
+    elif classifier.anthropic is None:
+        log.info("AI 분류: 꺼짐 (anthropic 패키지가 설치되지 않음 → 키워드 규칙으로 분류)")
+    else:
+        log.info("AI 분류: 꺼짐 (ANTHROPIC_API_KEY 없음 → 키워드 규칙으로 분류)")
     log.info("웹 푸시: %s", "사용" if get_vapid() else "꺼짐 (cryptography 패키지 없음)")
     log.info("자동 백업 위치: %s (최근 %d개 보관)", BACKUP_DIR, BACKUP_KEEP)
     # 분류가 끝나지 않은 메모(서버 재시작 등) 다시 처리

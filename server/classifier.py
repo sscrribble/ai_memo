@@ -10,8 +10,12 @@ import re
 from datetime import date, timedelta
 from typing import Literal, Optional
 
-import anthropic
 from pydantic import BaseModel, Field
+
+try:
+    import anthropic
+except ImportError:  # 휴대폰(Termux) 등에서 설치하지 못했으면 키워드 규칙으로만 분류
+    anthropic = None
 
 import recurrence
 
@@ -76,11 +80,13 @@ SYSTEM_PROMPT = """당신은 개인 메모 앱의 분류기입니다. 사용자�
   - 반복이 있으면 due_date는 오늘이나 그 뒤의 첫 번째 날짜입니다.
 - 제목과 태그는 메모와 같은 언어로 씁니다."""
 
-_client: Optional[anthropic.AsyncAnthropic] = None
+_client = None
 
 
-def _get_client() -> Optional[anthropic.AsyncAnthropic]:
+def _get_client():
     global _client
+    if anthropic is None:
+        return None
     if _client is None and (os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")):
         _client = anthropic.AsyncAnthropic()
     return _client
@@ -268,6 +274,8 @@ def _parse_time(text: str) -> Optional[str]:
         h = int(m.group(2))
         if m.group(1) in ("오후", "저녁", "밤") and h < 12:
             h += 12
+        elif m.group(1) is None and 1 <= h <= 6:
+            h += 12  # "3시 치과"처럼 오전·오후가 없으면 새벽보다 오후일 가능성이 크다
         minute = 30 if m.group(3) == "반" else int(m.group(4) or 0)
         if h < 24:
             return f"{h:02d}:{minute:02d}"
