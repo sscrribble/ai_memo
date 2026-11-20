@@ -97,7 +97,7 @@ bash scripts/start.sh
 
 ## 휴대폰 앱 (안드로이드)
 
-**[앱 내려받기 (ai-memo.apk)](https://github.com/sscrribble/ai_memo/releases/latest/download/ai-memo.apk)** — 휴대폰 브라우저에서 이 링크를 누릅니다.
+**[앱 내려받기 (ai-memo.apk)](https://github.com/sscrribble/ai_memo/raw/main/apk/ai-memo.apk)** — 휴대폰 브라우저에서 이 링크를 누릅니다. (안드로이드 8.0 이상)
 
 1. 내려받은 파일을 열면 "출처를 알 수 없는 앱" 허용을 묻습니다 → 허용 → 설치. (플레이 스토어 밖에서 받는 앱이라 Play 프로텍트가 확인을 요청할 수 있습니다)
 2. 처음 열면 **서버 주소**를 넣습니다. 서버 휴대폰에서 서버를 시작할 때 나온 주소입니다 (예: `http://192.168.0.23:8000`, Tailscale이면 `http://100.x.x.x:8000`, 터널이면 `https://memo.내도메인.com`)

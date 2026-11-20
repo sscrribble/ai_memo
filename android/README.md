@@ -26,7 +26,7 @@ export ANDROID_HOME=~/android-sdk
 AIMEMO_KEYSTORE=/경로/ai-memo-release.jks AIMEMO_KEYSTORE_PASSWORD=비밀번호 ./gradlew assembleRelease
 ```
 
-결과: `app/build/outputs/apk/release/app-release.apk`. 같은 키로 서명해야 기존 앱 위에 업데이트됩니다. 키가 바뀌면 앱을 지우고 다시 설치하세요 (메모는 서버에 있어 그대로입니다).
+결과: `app/build/outputs/apk/release/app-release.apk`. 배포용으로 저장소의 `apk/ai-memo.apk` 를 이 파일로 바꾸고, `versionCode` 를 1씩 올리세요. 같은 키로 서명해야 기존 앱 위에 업데이트됩니다. 키가 바뀌면 앱을 지우고 다시 설치하세요 (메모는 서버에 있어 그대로입니다).
 
 ## 시험
 
