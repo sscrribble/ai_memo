@@ -132,6 +132,7 @@ EOF
   서버 멈춤:   bash $APP_DIR/scripts/stop.sh
   업데이트:    bash $APP_DIR/scripts/termux-install.sh   (설정은 그대로)
   설정 바꾸기: nano $APP_DIR/.env   (바꾼 뒤 서버 다시 시작)
+  밖에서 접속: bash $APP_DIR/scripts/termux-tunnel.sh   (Cloudflare 터널, 선택)
 
   꼭 해 주세요: 휴대폰 설정 → 애플리케이션 → Termux → 배터리 → '제한 없음'
   (그래야 화면이 꺼져도 서버가 멈추지 않습니다)

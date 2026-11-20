@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 서명 키는 저장소에 넣지 않는다. 빌드할 때 환경변수로 알려 준다 (android/README.md 참고).
+def keystorePath = System.getenv('AIMEMO_KEYSTORE')
+
+android {
+    namespace 'io.github.sscrribble.aimemo'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'io.github.sscrribble.aimemo'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv('AIMEMO_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('AIMEMO_KEY_ALIAS') ?: 'aimemo'
+                keyPassword System.getenv('AIMEMO_KEY_PASSWORD') ?: System.getenv('AIMEMO_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystorePath) signingConfig signingConfigs.release
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303' // 안드로이드 밖(PC)에서 시험할 때 쓰는 JSON 구현
+}
+
+// 서버 연동 시험에 서버 주소·비밀번호를 넘긴다 (없으면 그 시험은 건너뜀)
+tasks.withType(Test).configureEach {
+    environment 'AIMEMO_TEST_SERVER', System.getenv('AIMEMO_TEST_SERVER') ?: ''
+    environment 'AIMEMO_TEST_PASSWORD', System.getenv('AIMEMO_TEST_PASSWORD') ?: ''
+    testLogging { events 'passed', 'skipped', 'failed'; exceptionFormat 'full' }
+}

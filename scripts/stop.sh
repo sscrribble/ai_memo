@@ -3,6 +3,7 @@
 #
 #   bash scripts/stop.sh
 pkill -f "scripts/start.sh" 2>/dev/null
+pkill -f "cloudflared tunnel --no-autoupdate run" 2>/dev/null # 밖에서 접속하는 터널도
 if pkill -f "uvicorn app:app" 2>/dev/null; then
   echo "서버를 멈췄습니다."
 else

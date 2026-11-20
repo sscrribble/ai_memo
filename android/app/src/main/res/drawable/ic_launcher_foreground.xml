@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- web/icon.svg 와 같은 그림 (메모지 + 반짝이). 둥근 모양으로 잘려도 보이도록 가운데에 작게 둔다 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <group
+        android:pivotX="256"
+        android:pivotY="256"
+        android:scaleX="0.75"
+        android:scaleY="0.75"
+        android:translateX="-16">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M164,112h184a28,28 0,0 1,28,28v236a28,28 0,0 1,-28,28h-184a28,28 0,0 1,-28,-28v-236a28,28 0,0 1,28,-28z" />
+        <path
+            android:fillColor="#C7C4F7"
+            android:pathData="M187,176h138a11,11 0,0 1,0,22h-138a11,11 0,0 1,0,-22z" />
+        <path
+            android:fillColor="#C7C4F7"
+            android:pathData="M187,232h98a11,11 0,0 1,0,22h-98a11,11 0,0 1,0,-22z" />
+        <path
+            android:fillColor="#C7C4F7"
+            android:pathData="M187,288h118a11,11 0,0 1,0,22h-118a11,11 0,0 1,0,-22z" />
+        <path
+            android:fillColor="#FACC15"
+            android:pathData="M372,300l14,34l34,14l-34,14l-14,34l-14,-34l-34,-14l34,-14z" />
+    </group>
+</vector>

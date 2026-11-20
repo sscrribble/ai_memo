@@ -10,6 +10,12 @@ const store = {
   del(key) { try { localStorage.removeItem(key); } catch {} },
 };
 
+// 안드로이드 앱 안에서 열렸을 때 앱과 주고받는 창구 (브라우저에서는 없음)
+const NATIVE = window.AIMemoApp || null;
+function native(method, ...args) {
+  try { return NATIVE && typeof NATIVE[method] === "function" ? NATIVE[method](...args) : undefined; } catch { return undefined; }
+}
+
 // ------------------------------------------------------------ 상태
 const S = {
   token: store.raw("memo_token") || "",
@@ -92,6 +98,7 @@ function applyTheme(theme) {
   store.set("memo_theme", theme);
   document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0d0d10" : "#f7f7f9";
   $$(".theme-toggle").forEach((b) => (b.innerHTML = svg(theme === "dark" ? ICON.sun : ICON.moon)));
+  native("setTheme", theme === "dark"); // 앱의 상단·하단 막대 색도 맞춘다
 }
 $$(".theme-toggle").forEach((b) => b.addEventListener("click", () =>
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark")));
@@ -335,6 +342,7 @@ function logout() {
   S.token = "";
   store.del("memo_token");
   S.es?.close();
+  native("clearSession");
   showLogin();
 }
 $("#login-form").addEventListener("submit", async (e) => {
@@ -355,6 +363,7 @@ let started = false;
 async function showApp() {
   $("#login").hidden = true;
   $("#app").hidden = false;
+  native("setSession", S.token || ""); // 앱이 화면을 닫아도 알림을 받을 수 있게
   const hint = $("#ai-hint");
   hint.classList.toggle("ai", !!S.config.ai);
   hint.innerHTML = S.config.ai ? `${svg(ICON.sparkle, 15)}AI 자동 분류` : "키워드로 분류 (AI 키 없음)";
@@ -399,7 +408,7 @@ function connect() {
   es.addEventListener("reminder", (e) => {
     // 푸시를 켠 기기는 시스템 알림으로 받으므로, 그렇지 않은 기기만 화면 안에 표시
     const r = JSON.parse(e.data);
-    if (!S.pushOn) banner(r.title, r.body);
+    if (!S.pushOn && native("notificationStatus") !== "on") banner(r.title, r.body);
   });
   es.addEventListener("settings", (e) => { if ($("#settings").open) fillSettings(JSON.parse(e.data)); });
   es.onerror = () => { // 브라우저가 알아서 다시 연결한다
@@ -923,6 +932,14 @@ async function syncPush() {
 function renderPushState() {
   const status = $("#push-status");
   const btn = $("#push-toggle");
+  if (NATIVE) { // 앱은 자체 알림을 쓴다
+    const on = native("notificationStatus") === "on";
+    status.textContent = on ? "켜짐 — 앱을 닫아도 일정·마감 알림이 옵니다." : "꺼져 있습니다. '알림 설정'에서 켜 주세요.";
+    btn.hidden = false;
+    btn.textContent = "알림 설정";
+    btn.classList.toggle("primary", !on);
+    return;
+  }
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   let msg = "";
   if (!S.config.push) msg = "서버에 웹 푸시가 설정되지 않았습니다.";
@@ -936,6 +953,7 @@ function renderPushState() {
 }
 
 $("#push-toggle").addEventListener("click", async () => {
+  if (NATIVE) return native("openNotificationSettings");
   try {
     if (S.pushOn) {
       const sub = await currentSub();
@@ -988,12 +1006,35 @@ $("#open-settings").addEventListener("click", async () => {
     renderPushState();
     renderData(data);
     renderTrash(trash);
+    renderAppSection();
     $("#settings").showModal();
   } catch (err) {
     toast(err.offline ? "오프라인에서는 설정을 열 수 없습니다" : err.message);
   }
 });
 $("#settings-close").addEventListener("click", () => $("#settings").close());
+
+// 앱 전용: 서버 주소, 배터리 사용 제한
+function renderAppSection() {
+  $("#sec-app").hidden = !NATIVE;
+  if (!NATIVE) return;
+  $("#app-server").textContent = native("serverUrl") || location.origin;
+  $("#app-battery-row").hidden = native("batteryOptimized") !== true;
+}
+$("#app-change-server").addEventListener("click", () => native("changeServer"));
+$("#app-battery").addEventListener("click", () => native("requestBatteryException"));
+// 휴대폰 설정 화면에서 돌아오면 상태를 다시 표시
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && NATIVE && $("#settings").open) { renderPushState(); renderAppSection(); }
+});
+
+// 안드로이드 뒤로 가기: 열린 창·메뉴부터 닫는다. 처리했으면 true (아니면 앱이 닫힘)
+window.AIMemoBack = () => {
+  if ($("#settings").open) { $("#settings").close(); return true; }
+  if (S.menu !== null || S.editing !== null) { S.menu = null; S.editing = null; render(); return true; }
+  if (!$("#app").hidden && S.view !== "all") { setView("all"); return true; }
+  return false;
+};
 $("#settings").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
 function renderData(d) {
@@ -1012,6 +1053,7 @@ $("#export").addEventListener("click", async () => {
     const res = await fetch("/api/export", { headers: S.token ? { Authorization: `Bearer ${S.token}` } : {} });
     if (!res.ok) throw new Error();
     const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || "ai-memo.json";
+    if (NATIVE) return toast(native("saveFile", name, await res.text()) || "저장하지 못했습니다"); // 앱은 다운로드 폴더에 저장
     const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(await res.blob()), download: name });
     document.body.append(a);
     a.click();

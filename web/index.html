@@ -123,6 +123,18 @@
       <input type="file" id="import-file" accept=".json,application/json" hidden>
     </section>
 
+    <section class="set-sec" id="sec-app" aria-labelledby="sec-app-title" hidden>
+      <h3 id="sec-app-title">앱</h3>
+      <div class="set-row">
+        <div><strong>서버 주소</strong><p class="path" id="app-server"></p></div>
+        <button class="btn" id="app-change-server" type="button">바꾸기</button>
+      </div>
+      <div class="set-row" id="app-battery-row">
+        <div><strong>배터리 사용 제한 해제</strong><p>해제해야 화면이 꺼져 있어도 알림이 제때 옵니다</p></div>
+        <button class="btn" id="app-battery" type="button">해제</button>
+      </div>
+    </section>
+
     <section class="set-sec" aria-labelledby="sec-trash">
       <h3 id="sec-trash">휴지통</h3>
       <div id="trash"></div>

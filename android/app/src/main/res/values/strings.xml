@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AI 메모</string>
+    <string name="channel_reminders">일정 알림</string>
+    <string name="channel_reminders_desc">일정·마감·아침 요약 알림</string>
+    <string name="channel_service">알림 대기</string>
+    <string name="channel_service_desc">서버와 연결을 유지하는 동안 표시됩니다. 이 알림을 꺼도 일정 알림은 옵니다.</string>
+    <string name="service_title">일정 알림을 기다리는 중</string>
+    <string name="service_text">서버와 연결되어 있습니다</string>
+</resources>

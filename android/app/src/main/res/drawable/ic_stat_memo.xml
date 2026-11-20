@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 상태 표시줄 알림 아이콘: 흰색 메모지 (줄 부분은 뚫림) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M7,3h10a2,2 0,0 1,2,2v14a2,2 0,0 1,-2,2h-10a2,2 0,0 1,-2,-2v-14a2,2 0,0 1,2,-2zM8.8,7h6.4a0.8,0.8 0,0 1,0,1.6h-6.4a0.8,0.8 0,0 1,0,-1.6zM8.8,10.6h4.4a0.8,0.8 0,0 1,0,1.6h-4.4a0.8,0.8 0,0 1,0,-1.6zM8.8,14.2h5.4a0.8,0.8 0,0 1,0,1.6h-5.4a0.8,0.8 0,0 1,0,-1.6z" />
+</vector>

@@ -25,6 +25,29 @@ ip=$(python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM
 echo "AI 메모 서버를 시작합니다."
 echo "  이 기기에서:        http://localhost:$PORT"
 [ -n "$ip" ] && echo "  같은 Wi-Fi 기기에서: http://$ip:$PORT"
+
+# 밖에서도 접속: Cloudflare 터널 (scripts/termux-tunnel.sh 로 설정). 끊기면 10초 뒤 다시 연결한다.
+tunnel_pid=""
+cleanup() {
+  [ -n "$tunnel_pid" ] && kill "$tunnel_pid" 2>/dev/null
+  pkill -f "cloudflared tunnel --no-autoupdate run" 2>/dev/null
+}
+trap cleanup EXIT
+if [ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
+  if command -v cloudflared >/dev/null 2>&1; then
+    mkdir -p data
+    (
+      while true; do
+        TUNNEL_TOKEN="$CLOUDFLARE_TUNNEL_TOKEN" cloudflared tunnel --no-autoupdate run >>data/tunnel.log 2>&1
+        sleep 10
+      done
+    ) &
+    tunnel_pid=$!
+    echo "  밖에서:             ${MEMO_PUBLIC_URL:-Cloudflare 에 연결한 주소}  (터널 기록: data/tunnel.log)"
+  else
+    echo "  ! cloudflared 가 없어 밖에서 접속하는 터널을 켜지 못했습니다. 설치: pkg install cloudflared"
+  fi
+fi
 echo "  멈추려면 Ctrl+C 를 두 번 누르세요."
 
 cd server || exit 1

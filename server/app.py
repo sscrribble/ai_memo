@@ -111,6 +111,9 @@ for _table, _column, _ddl in (
     ("notes", "pinned", "INTEGER NOT NULL DEFAULT 0"),
     ("notes", "deleted_at", "TEXT"),
     ("items", "section", "TEXT"),
+    ("reminders_sent", "title", "TEXT"),
+    ("reminders_sent", "body", "TEXT"),
+    ("reminders_sent", "tag", "TEXT"),
 ):
     if _column not in {r["name"] for r in _db.execute(f"PRAGMA table_info({_table})")}:
         _db.execute(f"ALTER TABLE {_table} ADD COLUMN {_column} {_ddl}")
@@ -216,6 +219,17 @@ def require_auth(request: Request) -> None:
         raise HTTPException(401, "로그인이 필요합니다")
 
 
+def client_ip(request: Request) -> str:
+    """접속한 기기의 주소. 같은 휴대폰의 터널(cloudflared 등)을 거쳐 온 요청이면 원래 주소를 쓴다."""
+    ip = request.client.host if request.client else "?"
+    if ip in ("127.0.0.1", "::1"):
+        forwarded = (request.headers.get("cf-connecting-ip")
+                     or request.headers.get("x-forwarded-for", "").split(",")[0].strip())
+        if forwarded:
+            return forwarded
+    return ip
+
+
 # 비밀번호 무차별 대입 막기: 10분 안에 5번 틀리면 5분 동안 잠금
 LOGIN_MAX_FAILS, LOGIN_WINDOW, LOGIN_LOCK = 5, 600, 300
 _login_fails: dict[str, list[float]] = {}
@@ -310,10 +324,10 @@ def get_vapid() -> Optional["reminders.Vapid"]:
     return _vapid
 
 
-async def deliver(rem: reminders.Reminder) -> int:
+async def deliver(rem: reminders.Reminder, sent_at: Optional[str] = None) -> int:
     """알림 하나를 모든 경로로 보낸다. 웹 푸시가 전달된 기기 수를 돌려준다."""
     log.info("알림: %s", rem.title)
-    payload = {"title": rem.title, "body": rem.body, "tag": rem.tag}
+    payload = {"title": rem.title, "body": rem.body, "tag": rem.tag, "key": rem.key, "sent_at": sent_at or now()}
     broadcast("reminder", payload)  # 앱을 열어 둔 기기에는 화면 안에서 표시
     delivered = 0
     subs = [dict(r) for r in query("SELECT * FROM push_subs")]
@@ -341,8 +355,10 @@ async def check_reminders() -> None:
     for rem in reminders.due_reminders(notes, datetime.now(TZ), get_settings()):
         if query("SELECT 1 FROM reminders_sent WHERE key=?", (rem.key,)):
             continue
-        execute("INSERT INTO reminders_sent (key, sent_at) VALUES (?,?)", (rem.key, now()))
-        await deliver(rem)
+        sent_at = now()
+        execute("INSERT INTO reminders_sent (key, sent_at, title, body, tag) VALUES (?,?,?,?,?)",
+                (rem.key, sent_at, rem.title, rem.body, rem.tag))
+        await deliver(rem, sent_at)
 
 
 # ---------------------------------------------------------------- 백업·정리
@@ -489,7 +505,7 @@ async def config():
 async def login(body: LoginIn, request: Request):
     if not PASSWORD:
         return {"token": ""}
-    ip = request.client.host if request.client else "?"
+    ip = client_ip(request)
     t = time.monotonic()
     for key in [k for k, v in _login_fails.items() if t - v[-1] > LOGIN_WINDOW]:
         del _login_fails[key]
@@ -660,6 +676,15 @@ async def clear_checked():
     return {"ok": True}
 
 
+@app.get("/api/reminders", dependencies=auth)
+async def recent_reminders(since: str = ""):
+    """since(보낸 시각) 이후의 알림. 앱이 연결이 끊겼던 동안 놓친 알림을 다시 띄우는 데 쓴다 (최근 12시간까지)."""
+    floor = (datetime.now(TZ) - timedelta(hours=12)).isoformat(timespec="seconds")
+    rows = query("SELECT key, title, body, tag, sent_at FROM reminders_sent "
+                 "WHERE sent_at >= ? AND title IS NOT NULL ORDER BY sent_at, key LIMIT 30", (max(since, floor),))
+    return [dict(r) for r in rows]
+
+
 @app.get("/api/settings", dependencies=auth)
 async def read_settings():
     return get_settings()
@@ -701,7 +726,7 @@ async def push_unsubscribe(body: PushUnsubIn):
 @app.post("/api/push/test", dependencies=auth)
 async def push_test():
     delivered = await deliver(reminders.Reminder(
-        key="test", title="AI 메모 알림 테스트", body="이 알림이 보이면 잘 설정된 것입니다.", tag="test"))
+        key=f"test:{now()}", title="AI 메모 알림 테스트", body="이 알림이 보이면 잘 설정된 것입니다.", tag="test"))
     return {"devices": delivered}
 
 
@@ -804,7 +829,7 @@ async def events(request: Request):
 
     async def stream():
         try:
-            yield "event: hello\ndata: {}\n\n"
+            yield f"event: hello\ndata: {json.dumps({'now': now()})}\n\n"
             while not await request.is_disconnected():
                 try:
                     yield await asyncio.wait_for(q.get(), timeout=20)

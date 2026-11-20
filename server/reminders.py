@@ -222,7 +222,7 @@ NTFY_URL = os.getenv("MEMO_NTFY_URL", "").strip()
 def send_termux(rem: Reminder) -> bool:
     """서버가 Termux(안드로이드)에서 돌고 있으면 그 휴대폰에 알림을 띄운다."""
     exe = shutil.which("termux-notification")
-    if not exe:
+    if not exe or os.getenv("MEMO_TERMUX_NOTIFY", "1") == "0":
         return False
     subprocess.run([exe, "--title", rem.title, "--content", rem.body, "--id", rem.tag, "--group", "ai-memo"],
                    timeout=15, check=False)
