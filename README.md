@@ -116,22 +116,25 @@ bash scripts/start.sh
 | 방법 | 비용 | 다른 기기에 할 일 | 특징 |
 |---|---|---|---|
 | **Tailscale** | 무료 | 기기마다 Tailscale 앱 설치·로그인 | 가장 쉬움. 인터넷에 공개되지 않아 안전 |
-| **Cloudflare 터널** | 도메인 값 (연 1~2만 원) | 없음 (주소만 입력) | `https://` 고정 주소. 웹 푸시·아이폰 홈 화면 앱 알림까지 됨 |
-| 공유기 포트포워딩 | 무료 | 없음 | 비추천: 공유기 설정, 보안(HTTPS) 직접 처리, 통신사에 따라 불가 |
+| **Cloudflare 터널** | 무료 (무료 도메인 사용 시) | 없음 (주소만 입력) | `https://` 고정 주소. 웹 푸시·아이폰 홈 화면 앱 알림까지 됨. 처음 설정이 조금 길다 |
+| 공유기 포트포워딩 | 무료 (ipTIME 공유기는 DDNS 도 무료) | 없음 | 비추천: `http://` 그대로 인터넷에 열려 비밀번호·메모가 암호화 없이 오감. 통신사 공유기와 겹치면 안 될 수 있음 |
 
-Cloudflare의 무료 임시 주소(`trycloudflare.com`)는 서버를 켤 때마다 주소가 바뀌고 실시간 동기화가 동작하지 않아 쓰지 않습니다.
+Cloudflare의 무료 임시 주소(`trycloudflare.com`)는 서버를 켤 때마다 주소가 바뀌고 실시간 동기화가 동작하지 않아 쓰지 않습니다. Tailscale 의 공개 주소 기능(Funnel)은 휴대폰 서버에서 쓸 수 없습니다.
 
-**Cloudflare 터널 연결하기**
-1. [Cloudflare](https://dash.cloudflare.com)에 가입하고 도메인을 등록합니다 (Cloudflare에서 사도 됩니다)
-2. Zero Trust → Networks 에서 **터널(Tunnel)을 만들고** 종류는 Cloudflared 를 고릅니다. 설치 명령(`cloudflared service install eyJ…`)이 나오면 복사해 둡니다 ([안내](https://developers.cloudflare.com/tunnel/setup))
-3. 같은 화면의 **Public Hostname**에 주소(예: `memo.내도메인.com`)를 정하고, Service 는 `HTTP` / `localhost:8000` 으로 저장합니다
-4. 서버 휴대폰(Termux)에서 아래를 실행해 복사한 명령과 주소를 붙여 넣습니다
+**Cloudflare 터널 연결하기** (모두 무료)
+1. 도메인이 없으면 [DigitalPlat](https://domain.digitalplat.org)에 가입해 무료 도메인(예: `내이름.dpdns.org`)을 받습니다. 사 둔 도메인이 있으면 그것을 써도 됩니다
+2. [Cloudflare](https://dash.cloudflare.com)에 가입해 그 도메인을 추가합니다. Cloudflare 가 알려 주는 네임서버 두 개를 DigitalPlat 의 도메인 설정에 넣으면 보통 30분 안에 연결됩니다
+3. Zero Trust → Networks 에서 **터널(Tunnel)을 만들고** 종류는 Cloudflared 를 고릅니다. 설치 명령(`cloudflared service install eyJ…`)이 나오면 복사해 둡니다 ([안내](https://developers.cloudflare.com/tunnel/setup))
+4. 같은 화면의 **Public Hostname**에 주소(예: `memo.내이름.dpdns.org`)를 정하고, Service 는 `HTTP` / `localhost:8000` 으로 저장합니다
+5. 서버 휴대폰(Termux)에서 아래를 실행해 복사한 명령과 주소를 붙여 넣습니다
 
 ```bash
 bash ~/ai_memo/scripts/termux-tunnel.sh
 ```
 
-이제 어디서든 `https://memo.내도메인.com`으로 접속합니다. 서버를 시작할 때마다 터널도 같이 켜집니다. 공개 주소이므로 비밀번호를 꼭 쓰세요 (5번 틀리면 잠깁니다).
+이제 어디서든 `https://memo.내이름.dpdns.org`로 접속합니다. 서버를 시작할 때마다 터널도 같이 켜집니다. 공개 주소이므로 비밀번호를 꼭 쓰세요 (5번 틀리면 잠깁니다).
+
+무료 도메인은 비영리 단체가 운영하는 서비스라 언젠가 바뀌거나 끝날 수 있습니다. 그때는 다른 도메인으로 1~5단계만 다시 하면 되고, 메모는 서버에 그대로 있습니다.
 
 PC·클라우드 서버라면 [Tailscale](https://tailscale.com), Cloudflare 터널, 또는 HTTPS 프록시(Caddy 등)를 쓰면 됩니다.
 
